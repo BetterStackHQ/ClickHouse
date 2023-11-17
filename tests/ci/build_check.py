@@ -293,6 +293,7 @@ def main():
         f"sudo chown -R ubuntu:ubuntu {build_output_path}", shell=True
     )
     logging.info("Build finished as %s, log path %s", build_status, log_path)
+
     if build_status == SUCCESS:
         cargo_cache.upload()
     else:

@@ -1,0 +1,190 @@
+# yamllint disable rule:comments-indentation
+name: Build
+
+env:
+  # Force the stdout and stderr streams to be unbuffered
+  PYTHONUNBUFFERED: 1
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+  push:
+    branches:
+      - 'master'
+      - '23.10'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docker/docs/**'
+      - 'docs/**'
+      - 'utils/check-style/aspell-ignore/**'
+      - 'tests/ci/docs_check.py'
+      - '.github/workflows/docs_check.yml'
+##########################################################################################
+##################################### SMALL CHECKS #######################################
+##########################################################################################
+jobs:
+  CheckLabels:
+    runs-on: nscloud
+    # Permissions to use OIDC token authentication
+    permissions:
+      contents: read
+      id-token: write
+    # Run the first check always, even if the CI is cancelled
+    if: ${{ always() }}
+    steps:
+      - name: Check out repository code
+        uses: ClickHouse/checkout@v1
+        with:
+          clear-repository: true
+      - name: Labels check
+        run: |
+          cd "$GITHUB_WORKSPACE/tests/ci"
+          pip3 install boto3 PyGithub unidiff
+          python3 run_check.py
+  PythonUnitTests:
+    runs-on: nscloud
+    # Permissions to use OIDC token authentication
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository code
+        uses: ClickHouse/checkout@v1
+        with:
+          clear-repository: true
+      - name: Python unit tests
+        run: |
+          cd "$GITHUB_WORKSPACE/tests/ci"
+          echo "Testing the main ci directory"
+          pip3 install boto3 PyGithub unidiff
+          python3 -m unittest discover -s . -p '*_test.py'
+          for dir in *_lambda/; do
+            echo "Testing $dir"
+            python3 -m unittest discover -s "$dir" -p '*_test.py'
+          done
+#########################################################################################
+#################################### ORDINARY BUILDS ####################################
+#########################################################################################
+  BuilderDebRelease:
+    runs-on:
+      - nscloud-ubuntu-22.04-amd64-32x64
+    # Permissions to use OIDC token authentication
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - run: git config --list --show-origin
+    - name: Check out repository code
+      uses: ClickHouse/checkout@v1
+      with:
+        clear-repository: true
+        submodules: false
+        fetch-depth: 1
+        filter: tree:0
+    - name: Check out submodules
+      run: |
+        ./contrib/update-submodules.sh
+    - name: Set build envs
+      run: |
+        cat >> "$GITHUB_ENV" << 'EOF'
+        BUILD_NAME=package_release
+        BUILD_STATIC_BINARY_NAME=amd64
+        EOF
+    - name: Build
+      working-directory: ./docker/packager
+      run: |
+        pip3 install boto3 PyGithub unidiff requests
+        export CMAKE_FLAGS='-DENABLE_CLICKHOUSE_SELF_EXTRACTING=1' 
+        ./packager --output-dir=/home/runner/work/_temp/package_release \
+                   --package-type=deb --compiler=clang-17 \
+                   --cache=ccache --ccache-dir=/home/runner/work/_temp/ccache \
+                   --cargo-cache-dir=/home/runner/work/_temp/cargo_cache/registry \
+                   --docker-image-version=0-6414ceffb3ece5bc1875e6d9a0e481e9c220882e --with-profiler --version=23.10.${{ github.sha }}
+    - uses: actions/upload-artifact@v3
+      with:
+        name: package_release
+        path: |
+          /home/runner/work/_temp/package_release/*.deb
+  BuilderDebAarch64:
+    runs-on:
+      - nscloud-ubuntu-22.04-amd64-32x64
+    # Permissions to use OIDC token authentication
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: git config --list --show-origin
+      - name: Check out repository code
+        uses: ClickHouse/checkout@v1
+        with:
+          clear-repository: true
+          submodules: false
+          fetch-depth: 1
+          filter: tree:0
+      - name: Check out submodules
+        run: |
+          ./contrib/update-submodules.sh
+      - name: Set build envs
+        run: |
+          cat >> "$GITHUB_ENV" << 'EOF'
+          BUILD_NAME=package_aarch64
+          BUILD_STATIC_BINARY_NAME=aarch64
+          EOF
+      - name: Build
+        working-directory: ./docker/packager
+        run: |
+          pip3 install boto3 PyGithub unidiff requests
+          export CMAKE_FLAGS='-DENABLE_CLICKHOUSE_SELF_EXTRACTING=1' 
+          ./packager --output-dir=/home/runner/work/_temp/package_aarch64 \
+                     --package-type=deb --compiler=clang-17-aarch64 \
+                     --cache=ccache --ccache-dir=/home/runner/work/_temp/ccache \
+                     --cargo-cache-dir=/home/runner/work/_temp/cargo_cache/registry \
+                     --docker-image-version=0-6414ceffb3ece5bc1875e6d9a0e481e9c220882e --with-profiler --version=23.10.${{ github.sha }}
+      - uses: actions/upload-artifact@v3
+        with:
+          name: package_aarch64
+          path: |
+            /home/runner/work/_temp/package_aarch64/*.deb
+#  BuilderDebDebug:
+#    uses: ./.github/workflows/reusable_build.yml
+#    with:
+#      build_name: package_debug
+############################################################################################
+##################################### Docker images  #######################################
+############################################################################################
+  DockerServerImages:
+    needs:
+      - BuilderDebRelease
+      - BuilderDebAarch64
+    runs-on: nscloud
+    # Permissions to use OIDC token authentication
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: docker/login-action@v2
+        with:
+          username: betterstack
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+      - name: Check out repository code
+        uses: ClickHouse/checkout@v1
+        with:
+          clear-repository: true
+          fetch-depth: 0
+          submodules: false
+          filter: tree:0
+      - uses: actions/download-artifact@v3
+        with:
+          name: package_release
+          path: docker/server/package_release/
+      - uses: actions/download-artifact@v3
+        with:
+          name: package_aarch64
+          path: docker/server/package_aarch64/
+      - uses: docker/build-push-action@v4
+        with:
+          context: docker/server
+          platforms: linux/amd64, linux/arm64
+          tags: |
+            betterstack/clickhouse-server:23.10.${{ github.sha }}
+          push: true

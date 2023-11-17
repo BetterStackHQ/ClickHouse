@@ -46,34 +46,6 @@ def build_image(image_name: str, filepath: Path) -> None:
     )
 
 
-def pre_build(repo_path: Path, env_variables: List[str]) -> None:
-    if "WITH_PERFORMANCE=1" in env_variables:
-        current_branch = subprocess.check_output(
-            "git branch --show-current", shell=True, encoding="utf-8"
-        ).strip()
-        is_shallow = (
-            subprocess.check_output(
-                "git rev-parse --is-shallow-repository", shell=True, encoding="utf-8"
-            )
-            == "true\n"
-        )
-        if is_shallow:
-            # I've spent quite some time on looking around the problem, and my
-            # conclusion is: in the current state the easiest way to go is to force
-            # unshallow repository for performance artifacts.
-            # To change it we need to rework our performance tests docker image
-            raise BuildException(
-                "shallow repository is not suitable for performance builds"
-            )
-        if current_branch != "master":
-            cmd = (
-                f"git -C {repo_path} fetch --no-recurse-submodules "
-                "--no-tags origin master:master"
-            )
-            logging.info("Getting master branch for performance artifact: '%s'", cmd)
-            subprocess.check_call(cmd, shell=True)
-
-
 def run_docker_image_with_env(
     image_name: str,
     as_root: bool,
@@ -105,7 +77,7 @@ def run_docker_image_with_env(
         ccache_mount = ""
 
     cmd = (
-        f"docker run --network=host --user={user} --rm {ccache_mount} "
+        f"docker run --rm {ccache_mount} "
         f"--volume={output_dir}:/output --volume={ch_root}:/build {env_part} "
         f"--volume={cargo_cache_dir}:/rust/cargo/registry {interactive} {image_name}"
     )
@@ -257,7 +229,6 @@ def parse_env_variables(
         )
         if is_release_build(debug_build, package_type, sanitizer):
             cmake_flags.append("-DSPLIT_DEBUG_SYMBOLS=ON")
-            result.append("WITH_PERFORMANCE=1")
             if is_cross_arm:
                 cmake_flags.append("-DBUILD_STANDALONE_KEEPER=1")
             else:
@@ -521,7 +492,6 @@ def main() -> None:
         args.with_binaries,
     )
 
-    pre_build(args.clickhouse_repo_path, env_prepared)
     run_docker_image_with_env(
         image_with_version,
         args.as_root,
