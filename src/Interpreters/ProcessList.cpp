@@ -329,11 +329,10 @@ ProcessListEntry::~ProcessListEntry()
 
     parent.have_space.notify_all();
 
-    /// If there are no more queries for the user, then we will reset memory tracker and network throttler.
     if (user_process_list.queries.empty())
-        user_process_list.resetTrackers();
+        parent.user_to_queries.erase(user);
 
-    /// Reset throttler, similarly (see above).
+    /// If there are no more queries, then we will reset memory tracker and network throttler.
     if (parent.processes.empty())
         parent.total_network_throttler.reset();
 }
