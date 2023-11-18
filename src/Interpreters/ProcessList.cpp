@@ -183,15 +183,15 @@ ProcessList::insert(const String & query_, const IAST * ast, ContextMutablePtr q
         }
 
         /// Check other users running query with our query_id
-        for (const auto & user_process_list : user_to_queries)
-        {
-            if (user_process_list.first == client_info.current_user)
-                continue;
-            if (auto running_query = user_process_list.second.queries.find(client_info.current_query_id); running_query != user_process_list.second.queries.end())
-                throw Exception(ErrorCodes::QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING,
-                                "Query with id = {} is already running by user {}",
-                                client_info.current_query_id, user_process_list.first);
-        }
+//        for (const auto & user_process_list : user_to_queries)
+//        {
+//            if (user_process_list.first == client_info.current_user)
+//                continue;
+//            if (auto running_query = user_process_list.second.queries.find(client_info.current_query_id); running_query != user_process_list.second.queries.end())
+//                throw Exception(ErrorCodes::QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING,
+//                                "Query with id = {} is already running by user {}",
+//                                client_info.current_query_id, user_process_list.first);
+//        }
 
         auto user_process_list_it = user_to_queries.find(client_info.current_user);
         if (user_process_list_it == user_to_queries.end())
