@@ -193,14 +193,18 @@ void ReadFromCluster::initializePipeline(QueryPipelineBuilder & pipeline, const 
     if (current_settings[Setting::max_parallel_replicas] > 1)
         max_replicas_to_use = std::min(max_replicas_to_use, current_settings[Setting::max_parallel_replicas].value);
 
+    size_t replica_index = 0;
+    size_t number_of_replicas = 0;
+    std::vector<IConnectionPool::Entry> try_results;
+
     for (const auto & shard_info : cluster->getShardsInfo())
     {
-        if (pipes.size() >= max_replicas_to_use)
+        if (try_results.size() >= max_replicas_to_use)
             break;
 
         /// We're taking all replicas as shards,
         /// so each shard will have only one address to connect to.
-        auto try_results = shard_info.pool->getMany(
+        auto shard_try_results = shard_info.pool->getMany(
             timeouts,
             current_settings,
             PoolMode::GET_ONE,
@@ -210,8 +214,19 @@ void ReadFromCluster::initializePipeline(QueryPipelineBuilder & pipeline, const 
         if (try_results.empty())
             continue;
 
+        number_of_replicas++;
+        try_results.emplace_back(std::move(try_result.front()));
+    }
+
+    for (auto & try_result : try_results)
+    {
+        IConnections::ReplicaInfo replica_info{
+            .number_of_current_replica = replica_index++,
+            .number_of_replicas = number_of_replicas,
+        };
+
         auto remote_query_executor = std::make_shared<RemoteQueryExecutor>(
-            std::vector<IConnectionPool::Entry>{try_results.front()},
+            std::vector<IConnectionPool::Entry>{try_result},
             queryToString(query_to_send),
             getOutputHeader(),
             new_context,
@@ -219,7 +234,7 @@ void ReadFromCluster::initializePipeline(QueryPipelineBuilder & pipeline, const 
             scalars,
             Tables(),
             processed_stage,
-            extension);
+            RemoteQueryExecutor::Extension{.task_iterator = extension->task_iterator, .replica_info = std::move(replica_info)});
 
         remote_query_executor->setLogger(log);
         pipes.emplace_back(std::make_shared<RemoteSource>(
