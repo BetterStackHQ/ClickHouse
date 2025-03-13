@@ -215,7 +215,7 @@ void ReadFromCluster::initializePipeline(QueryPipelineBuilder & pipeline, const 
             continue;
 
         number_of_replicas++;
-        try_results.emplace_back(std::move(try_result.front()));
+        try_results.emplace_back(std::move(try_results.front()));
     }
 
     for (auto & try_result : try_results)

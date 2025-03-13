@@ -146,8 +146,6 @@ RemoteQueryExecutor::Extension StorageObjectStorageCluster::getTaskIteratorExten
                 return "";
             });
 
-        // TODO: ObjectInfoInArchive?
-
         return RemoteQueryExecutor::Extension{ .task_iterator = std::move(callback) };
     }
     else
