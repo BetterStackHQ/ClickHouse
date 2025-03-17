@@ -56,7 +56,8 @@ public:
         const ActionsDAG::Node * predicate,
         const NamesAndTypesList & virtual_columns,
         ObjectInfos * read_keys,
-        std::function<void(FileProgress)> file_progress_callback = {});
+        std::function<void(FileProgress)> file_progress_callback = {},
+        bool skip_object_metadata = false);
 
     static std::string getUniqueStoragePathIdentifier(
         const Configuration & configuration,
@@ -171,6 +172,7 @@ public:
         ObjectInfos * read_keys_,
         size_t list_object_keys_size,
         bool throw_on_zero_files_match_,
+        bool skip_object_metadata_,
         std::function<void(FileProgress)> file_progress_callback_ = {});
 
     ~GlobIterator() override = default;
@@ -235,6 +237,7 @@ private:
     const std::vector<String> keys;
     std::atomic<size_t> index = 0;
     bool ignore_non_existent_files;
+    bool skip_object_metadata;
 };
 
 /*
