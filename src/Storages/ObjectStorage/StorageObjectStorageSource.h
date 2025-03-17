@@ -172,7 +172,6 @@ public:
         ObjectInfos * read_keys_,
         size_t list_object_keys_size,
         bool throw_on_zero_files_match_,
-        bool skip_object_metadata_,
         std::function<void(FileProgress)> file_progress_callback_ = {});
 
     ~GlobIterator() override = default;
@@ -221,6 +220,7 @@ public:
         const NamesAndTypesList & virtual_columns_,
         ObjectInfos * read_keys_,
         bool ignore_non_existent_files_,
+        bool skip_object_metadata_,
         std::function<void(FileProgress)> file_progress_callback = {});
 
     ~KeysIterator() override = default;
