@@ -818,8 +818,8 @@ StorageObjectStorageSource::KeysIterator::KeysIterator(
     , virtual_columns(virtual_columns_)
     , file_progress_callback(file_progress_callback_)
     , keys(configuration->getPaths())
-    , ignore_non_existent_files(ignore_non_existent_files_
-    , skip_object_metadata(skip_object_metadata_))
+    , ignore_non_existent_files(ignore_non_existent_files_)
+    , skip_object_metadata(skip_object_metadata_)
 {
     if (read_keys_)
     {
