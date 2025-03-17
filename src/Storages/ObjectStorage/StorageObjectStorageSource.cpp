@@ -386,6 +386,7 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
 
         if (!object_info->metadata)
         {
+            const auto & path = object_info->isArchive() ? object_info->getPathToArchive() : object_info->getPath();
             if (query_settings.ignore_non_existent_file)
             {
                 auto metadata = object_storage->tryGetObjectMetadata(path);
