@@ -1065,6 +1065,7 @@ public:
     {
         extract_tree = buildJSONExtractTree<JSONParser>(result_type, function_name);
         insert_settings.insert_default_on_invalid_elements_in_complex_types = true;
+        insert_settings.named_tuples_from_objects_only = true;
     }
 
     bool insertResultToColumn(IColumn & dest, const Element & element, std::string_view, const FormatSettings & format_settings, String & error)
@@ -1111,6 +1112,7 @@ public:
         const auto value_type = typeid_cast<const DataTypeTuple *>(tuple_type.get())->getElements()[1];
         extract_tree = buildJSONExtractTree<JSONParser>(value_type, function_name);
         insert_settings.insert_default_on_invalid_elements_in_complex_types = true;
+        insert_settings.named_tuples_from_objects_only = true;
     }
 
     bool insertResultToColumn(IColumn & dest, const Element & element, std::string_view, const FormatSettings & format_settings, String & error)
