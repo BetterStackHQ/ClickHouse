@@ -34,6 +34,11 @@ struct JSONExtractInsertSettings
     /// Used inside `VariantNode` so that `Variant(IntT, FloatT)` picks the float member
     /// for fractional values instead of silently dropping the fractional part.
     bool no_int_truncation_from_double = false;
+    /// If true, the `json_extract_named_tuples_as_objects` format setting applies:
+    /// a named Tuple is not filled positionally from a JSON array. Set by the
+    /// JSONExtract function family only — the JSON data type keeps the positional
+    /// fill of its typed paths independently of that setting.
+    bool named_tuples_from_objects_only = false;
 };
 
 template <typename JSONParser>
