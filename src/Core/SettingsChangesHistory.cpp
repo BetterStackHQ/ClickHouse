@@ -45,6 +45,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"throw_on_hive_partitioning_resolution_failure", false, false, "New setting to fail the query when Hive-style partitioning detection for an object storage table cannot list the storage. Disabled here to keep the pre-existing behavior of running without the Hive partition columns, and enabled by default from 26.8."},
             {"use_materialized_view_select_plan_cache", false, false, "New setting to cache the analyzed select plan of a materialized view across inserted blocks and inserts."},
             {"materialized_view_select_plan_cache_max_variants", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
+            {"json_extract_named_tuples_as_objects", false, true, "New setting: the `JSONExtract` family and typed JSON paths fill named tuples from JSON objects only, instead of the historical positional fill from arrays. Unnamed tuples still fill positionally."},
         });
         addSettingsChanges(settings_changes_history, "26.7",
         {
