@@ -13,6 +13,13 @@
 #include <Storages/WindowView/StorageWindowView.h>
 #include <Storages/StorageMaterializedView.h>
 #include <Storages/StorageValues.h>
+#include <Storages/MaterializedView/MVSelectPlanCache.h>
+#include <Processors/QueryPlan/QueryPlan.h>
+#include <Processors/QueryPlan/ReadFromPreparedSource.h>
+#include <Processors/QueryPlan/BuildQueryPipelineSettings.h>
+#include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
+#include <Processors/Sources/SourceFromSingleChunk.h>
+#include <Common/SipHash.h>
 
 #include <DataTypes/DataTypeEnum.h>
 #include <Interpreters/ProcessList.h>
@@ -89,6 +96,10 @@ namespace ProfileEvents
     extern const Event SelectedBytes;
     extern const Event InsertedRows;
     extern const Event InsertedBytes;
+    extern const Event MVSelectPlanCacheHits;
+    extern const Event MVSelectPlanCacheMisses;
+    extern const Event MVSelectPlanCacheSkippedNonDeterministic;
+    extern const Event MVSelectPlanCacheSkippedNonCloneable;
 }
 
 
@@ -112,6 +123,8 @@ namespace Setting
     extern const SettingsBool insert_null_as_default;
     extern const SettingsMaxThreads max_threads;
     extern const SettingsBool use_concurrency_control;
+    extern const SettingsBool use_mv_select_plan_cache;
+    extern const SettingsUInt64 mv_select_plan_cache_max_variants_per_view;
     extern const SettingsMilliseconds log_queries_min_query_duration_ms;
     extern const SettingsLogQueriesType log_queries_min_type;
     extern const SettingsBool log_query_views;
@@ -587,6 +600,9 @@ public:
         , context(context_)
         , async_insert(async_insert_)
     {
+        if (context->getSettingsRef()[Setting::use_mv_select_plan_cache])
+            if (const auto * materialized_view = dynamic_cast<const StorageMaterializedView *>(view_storage.get()))
+                plan_cache = &materialized_view->getSelectPlanCache();
     }
 
     String getName() const override { return "ExecutingInnerQueryFromView"; }
@@ -632,6 +648,13 @@ private:
     ContextPtr context;
     bool async_insert = false;
 
+    /// See the `use_mv_select_plan_cache` setting. Set when the view is a
+    /// `StorageMaterializedView` and the setting is enabled; the keys are computed
+    /// lazily on the first block (they are constant for one transform).
+    MVSelectPlanCache * plan_cache = nullptr;
+    std::optional<UInt128> cache_variant_key;
+    UInt64 cache_structure_hash = 0;
+
     struct State
     {
         QueryPipeline pipeline;
@@ -646,33 +669,216 @@ private:
 
     QueryPipeline process(Block data_block, Chunk::ChunkInfoCollection && chunk_infos)
     {
+        auto local_context = Context::createCopy(context);
+
+        MVSelectPlanCache::EntryPtr cached_entry;
+        if (plan_cache)
+        {
+            if (!cache_variant_key)
+                computeCacheKeys();
+            cached_entry = plan_cache->get(*cache_variant_key, cache_structure_hash);
+            if (cached_entry && cached_entry->cacheable)
+            {
+                ProfileEvents::increment(ProfileEvents::MVSelectPlanCacheHits);
+                auto pipeline = buildSelectPipelineFromCacheEntry(*cached_entry, local_context, std::move(data_block));
+                pipeline.resize(1);
+                pipeline.dropTotalsAndExtremes();
+                return finishPipeline(std::move(pipeline), std::move(chunk_infos), cached_entry->conversion_actions);
+            }
+            if (!cached_entry)
+                ProfileEvents::increment(ProfileEvents::MVSelectPlanCacheMisses);
+        }
+
         /// We create a table with the same name as original table and the same alias columns,
         ///  but it will contain single block (that is INSERT-ed into main table).
         /// InterpreterSelectQuery will do processing of alias columns.
-        auto local_context = Context::createCopy(context);
-
         local_context->addViewSource(std::make_shared<StorageValues>(
             source_id,
             source_metadata->getColumns(),
             std::move(data_block),
             source_metadata->virtuals));
 
-        QueryPipelineBuilder pipeline;
+        /// A `cached_entry` here is a negative one: this view select must not be cached,
+        /// so run the plain path without attempting another capture.
+        std::shared_ptr<MVSelectPlanCache::Entry> capture;
+        QueryPipelineBuilder pipeline = buildSelectPipeline(local_context, (plan_cache && !cached_entry) ? &capture : nullptr);
 
-        if (local_context->getSettingsRef()[Setting::allow_experimental_analyzer])
+        pipeline.resize(1);
+        pipeline.dropTotalsAndExtremes();
+
+        auto conversion_actions = std::make_shared<ExpressionActions>(buildConversionToInnerTable(pipeline.getHeader(), local_context));
+
+        if (capture)
+        {
+            capture->conversion_actions = conversion_actions;
+            plan_cache->put(
+                *cache_variant_key,
+                std::move(capture),
+                local_context->getSettingsRef()[Setting::mv_select_plan_cache_max_variants_per_view]);
+        }
+
+        return finishPipeline(std::move(pipeline), std::move(chunk_infos), conversion_actions);
+    }
+
+    void computeCacheKeys()
+    {
+        SipHash variant;
+        const auto & header = getInputPort().getHeader();
+        variant.update(header.columns());
+        for (const auto & column : header)
+        {
+            variant.update(column.name);
+            variant.update(column.type->getName());
+        }
+        for (const auto & change : context->getSettingsRef().changes())
+        {
+            variant.update(change.name);
+            variant.update(change.value.dump());
+        }
+        if (auto user_id = context->getUserID())
+            variant.update(user_id->toUnderType());
+        for (const auto & role_id : context->getCurrentRoles())
+            variant.update(role_id.toUnderType());
+        variant.update(context->getSettingsRef()[Setting::allow_experimental_analyzer].value);
+        cache_variant_key = variant.get128();
+
+        SipHash structure;
+        structure.update(view_id.uuid.toUnderType());
+        structure.update(source_id.uuid.toUnderType());
+        structure.update(inner_id.uuid.toUnderType());
+        structure.update(view_metadata->getMetadataVersion());
+        structure.update(source_metadata->getMetadataVersion());
+        structure.update(inner_metadata->getMetadataVersion());
+        /// Metadata versions stay 0 for engines that do not track them; the column
+        /// structure hashes cover those.
+        structure.update(source_metadata->getColumns().toString(/*include_comments=*/ false));
+        structure.update(inner_metadata->getColumns().toString(/*include_comments=*/ false));
+        const auto select_hash = select_query->getTreeHash(/*ignore_aliases=*/ false);
+        structure.update(select_hash.low64);
+        structure.update(select_hash.high64);
+        cache_structure_hash = structure.get64();
+    }
+
+    /// The select pipeline of the current block: exactly the pre-cache behaviour when
+    /// `capture_out` is nullptr; otherwise the plan is built explicitly so an optimized
+    /// copy can be captured for the cache before the pipeline consumes it. The two are
+    /// equivalent — the interpreters' `buildQueryPipeline` performs the same steps.
+    QueryPipelineBuilder buildSelectPipeline(ContextMutablePtr local_context, std::shared_ptr<MVSelectPlanCache::Entry> * capture_out)
+    {
+        const bool use_analyzer = local_context->getSettingsRef()[Setting::allow_experimental_analyzer];
+
+        if (!capture_out)
+        {
+            if (use_analyzer)
+            {
+                InterpreterSelectQueryAnalyzer interpreter(
+                    select_query, local_context, SelectQueryOptions().ignoreAccessCheck(), local_context->getViewSource());
+                return interpreter.buildQueryPipeline();
+            }
+            InterpreterSelectQuery interpreter(select_query, local_context, SelectQueryOptions().ignoreAccessCheck());
+            return interpreter.buildQueryPipeline();
+        }
+
+        QueryPlan plan;
+        if (use_analyzer)
         {
             InterpreterSelectQueryAnalyzer interpreter(
                 select_query, local_context, SelectQueryOptions().ignoreAccessCheck(), local_context->getViewSource());
-            pipeline = interpreter.buildQueryPipeline();
+            plan = std::move(interpreter).extractQueryPlan();
         }
         else
         {
             InterpreterSelectQuery interpreter(select_query, local_context, SelectQueryOptions().ignoreAccessCheck());
-            pipeline = interpreter.buildQueryPipeline();
+            interpreter.buildQueryPlan(plan);
         }
-        pipeline.resize(1);
-        pipeline.dropTotalsAndExtremes();
 
+        QueryPlanOptimizationSettings optimization_settings(local_context);
+        BuildQueryPipelineSettings build_settings(local_context);
+        plan.setConcurrencyControl(local_context->getSettingsRef()[Setting::use_concurrency_control]);
+        plan.optimize(optimization_settings);
+
+        *capture_out = tryCaptureSkeleton(plan, local_context);
+
+        return std::move(*plan.buildQueryPipeline(optimization_settings, build_settings, /*do_optimize=*/ false));
+    }
+
+    /// Clone the optimized plan with every view-source read replaced by a marker (which
+    /// also strips the inserted block's data from the copy), restoring the plan
+    /// afterwards. Returns a negative entry when the select must not be cached.
+    std::shared_ptr<MVSelectPlanCache::Entry> tryCaptureSkeleton(QueryPlan & plan, const ContextPtr & local_context)
+    {
+        auto entry = std::make_shared<MVSelectPlanCache::Entry>();
+        entry->structure_hash = cache_structure_hash;
+
+        if (selectContainsAnalysisTimeVolatileConstants(select_query, local_context))
+        {
+            ProfileEvents::increment(ProfileEvents::MVSelectPlanCacheSkippedNonDeterministic);
+            entry->cacheable = false;
+            return entry;
+        }
+
+        auto source_nodes = collectViewSourceNodes(plan, local_context->getViewSource().get());
+        if (source_nodes.empty())
+        {
+            /// The select does not read the source table (e.g. a constant query). Such a
+            /// plan is block-independent but also cheap; not worth a special case.
+            entry->cacheable = false;
+            return entry;
+        }
+
+        std::vector<QueryPlanStepPtr> saved_steps;
+        saved_steps.reserve(source_nodes.size());
+        for (auto * node : source_nodes)
+        {
+            saved_steps.push_back(std::move(node->step));
+            node->step = std::make_unique<MVCachedSourceMarkerStep>(saved_steps.back()->getOutputHeader());
+        }
+
+        try
+        {
+            entry->plan = plan.clone();
+        }
+        catch (const Exception & e)
+        {
+            for (size_t i = 0; i < source_nodes.size(); ++i)
+                source_nodes[i]->step = std::move(saved_steps[i]);
+            if (e.code() != ErrorCodes::NOT_IMPLEMENTED)
+                throw;
+            /// A step of this plan does not support cloning; remember not to try again.
+            ProfileEvents::increment(ProfileEvents::MVSelectPlanCacheSkippedNonCloneable);
+            entry->cacheable = false;
+            return entry;
+        }
+
+        for (size_t i = 0; i < source_nodes.size(); ++i)
+            source_nodes[i]->step = std::move(saved_steps[i]);
+        return entry;
+    }
+
+    QueryPipelineBuilder buildSelectPipelineFromCacheEntry(const MVSelectPlanCache::Entry & entry, ContextMutablePtr local_context, Block data_block)
+    {
+        QueryPlan plan = entry.plan.clone();
+        for (auto * node : collectMarkerNodes(plan))
+        {
+            auto marker_header = node->step->getOutputHeader();
+            /// The same column extraction `StorageValues::read` would perform for this node.
+            Block source_block;
+            for (const auto & column : *marker_header)
+                source_block.insert(data_block.getColumnOrSubcolumnByName(column.name));
+            Chunk chunk(source_block.getColumns(), source_block.rows());
+            node->step = std::make_unique<ReadFromPreparedSource>(
+                Pipe(std::make_shared<SourceFromSingleChunk>(marker_header, std::move(chunk))));
+            node->children.clear();
+        }
+
+        QueryPlanOptimizationSettings optimization_settings(local_context);
+        BuildQueryPipelineSettings build_settings(local_context);
+        plan.setConcurrencyControl(local_context->getSettingsRef()[Setting::use_concurrency_control]);
+        return std::move(*plan.buildQueryPipeline(optimization_settings, build_settings, /*do_optimize=*/ false));
+    }
+
+    ActionsDAG buildConversionToInnerTable(const Block & select_output, const ContextPtr & local_context) const
+    {
         bool insert_null_as_default = false;
 
         auto construct_columns_to_convert = [] (const ColumnsWithTypeAndName & src, const ColumnsWithTypeAndName & dst)
@@ -735,12 +941,12 @@ private:
                      std::move(extracting_subcolumns_dag), std::move(adding_missing_defaults_dag)));
         };
 
-        pipeline.addTransform(std::make_shared<ExpressionTransform>(
-            pipeline.getSharedHeader(),
-            std::make_shared<ExpressionActions>(
-                build_conversion(
-                    pipeline.getHeader(),
-                    inner_metadata))));
+        return build_conversion(select_output, inner_metadata);
+    }
+
+    QueryPipeline finishPipeline(QueryPipelineBuilder && pipeline, Chunk::ChunkInfoCollection && chunk_infos, const ExpressionActionsPtr & conversion_actions) const
+    {
+        pipeline.addTransform(std::make_shared<ExpressionTransform>(pipeline.getSharedHeader(), conversion_actions));
 
         inner_metadata->check(pipeline.getHeader());
 

@@ -12,6 +12,8 @@
 namespace DB
 {
 
+class MVSelectPlanCache;
+
 class StorageMaterializedView final : public StorageWithCommonVirtualColumns, WithMutableContext
 {
 public:
@@ -129,6 +131,10 @@ public:
     bool isRefreshable() const { return refresher.ptr != nullptr; }
     bool isAppendRefreshStrategy() const { return isRefreshable() && fixed_uuid; }
 
+    /// See the `use_mv_select_plan_cache` setting. Lives on the view so the cache
+    /// disappears with `DROP`/`DETACH` and starts cold after a restart.
+    MVSelectPlanCache & getSelectPlanCache() const { return *select_plan_cache; }
+
 private:
     mutable std::mutex target_table_id_mutex;
     /// Will be initialized in constructor
@@ -138,6 +144,8 @@ private:
     bool refresh_coordinated = false;
 
     bool has_inner_table = false;
+
+    std::shared_ptr<MVSelectPlanCache> select_plan_cache;
 
     /// If false, inner table is replaced on each refresh. In that case, target_table_id doesn't
     /// have UUID, and we do inner table lookup by name instead.

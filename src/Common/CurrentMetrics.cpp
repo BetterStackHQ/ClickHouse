@@ -311,6 +311,7 @@
     M(AttachedTable, "Active tables.") \
     M(AttachedReplicatedTable, "Active replicated tables.") \
     M(AttachedView, "Active views.") \
+    M(MVSelectPlanCacheEntries, "Cached materialized view select plan variants across all views (see the `use_mv_select_plan_cache` setting).") \
     M(AttachedDictionary, "Active dictionaries.") \
     M(PartsOutdated, "Not active data part, but could be used by only current SELECTs, could be deleted after SELECTs finishes.") \
     M(PartsDeleting, "Not active data part with identity refcounter, it is deleting right now by a cleaner.") \
