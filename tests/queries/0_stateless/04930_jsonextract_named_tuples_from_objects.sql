@@ -42,3 +42,34 @@ FROM (SELECT arrayJoin(['{"k":{"a":"v"}}', '{"k":["v"]}', '{"k":7}', '{}']) AS j
 -- Duplicate keys (documented divergence, pinned): named tuple keeps the first
 -- valid occurrence; the scalar path keeps the first occurrence.
 SELECT JSONExtract('{"t":{"x":1,"x":2}}', 't', 'Tuple(x Int64)'), JSONExtract('{"t":{"x":1,"x":2}}', 't', 'x', 'Int64');
+
+-- Same core cases under the RapidJSON parser.
+SET allow_simdjson = 0;
+SELECT JSONExtract('{"t":["a","b"]}', 't', 'Tuple(x String, y String)');
+SET json_extract_named_tuples_as_objects = 0;
+SELECT JSONExtract('{"t":["a","b"]}', 't', 'Tuple(x String, y String)');
+SET json_extract_named_tuples_as_objects = 1;
+SELECT JSONExtract('[3,5,7]', 'Tuple(Int64, Int64, Int64)');
+SET allow_simdjson = 1;
+
+-- Nullable named tuple from an array yields NULL at the top level (the failure
+-- propagates through the Nullable wrapper, unlike the plain tuple's defaults).
+SELECT JSONExtract('{"t":["a","b"]}', 't', 'Nullable(Tuple(x String, y String))');
+
+-- Map values and JSONExtractKeysAndValues with named tuple values: arrays are
+-- invalid values, so entries default or are dropped like any other mismatch.
+SELECT JSONExtract('{"m":{"k1":["a","b"],"k2":{"x":"c","y":"d"}}}', 'm', 'Map(String, Tuple(x String, y String))');
+SELECT JSONExtractKeysAndValues('{"k1":["a","b"],"k2":{"x":"c","y":"d"}}', 'Tuple(x String, y String)');
+
+-- Typed paths of the JSON data type: an array for a named-tuple typed path is
+-- rejected by default (this path hard-fails rather than defaulting)...
+CREATE TABLE t_04930_json (j JSON(t Tuple(x Int64, y Int64))) ENGINE = MergeTree ORDER BY tuple();
+INSERT INTO t_04930_json VALUES ('{"t":[1,2]}'); -- { serverError INCORRECT_DATA }
+INSERT INTO t_04930_json VALUES ('{"t":{"x":1,"y":2}}');
+SELECT j.t FROM t_04930_json;
+-- ...and the setting restores the historical positional acceptance.
+SET json_extract_named_tuples_as_objects = 0;
+INSERT INTO t_04930_json VALUES ('{"t":[3,4]}');
+SELECT j.t FROM t_04930_json ORDER BY j.t.x;
+SET json_extract_named_tuples_as_objects = 1;
+DROP TABLE t_04930_json;
