@@ -563,6 +563,13 @@ This setting works only when setting `input_format_json_named_tuples_as_objects`
 
 Enabled by default.
 )", 0) \
+    DECLARE(Bool, json_extract_named_tuples_as_objects, true, R"(
+Fill named tuples from JSON objects only, in the `JSONExtract` family of functions. When disabled, a JSON array fills a named tuple positionally (the historical behavior), so which array element lands in which named field depends on the tuple's declaration order. Unnamed tuples always fill positionally from arrays regardless of this setting.
+
+Typed paths of the `JSON` data type are not affected: they always fill named tuples from arrays positionally. Named tuple *columns* in JSON input formats are governed by the separate [input_format_json_named_tuples_as_objects](#input_format_json_named_tuples_as_objects) setting; this setting covers the extraction functions only.
+
+Enabled by default.
+)", 0) \
     DECLARE(Bool, input_format_json_throw_on_bad_escape_sequence, true, R"(
 Throw an exception if JSON string contains bad escape sequence in JSON input formats. If disabled, bad escape sequences will remain as is in the data.
 

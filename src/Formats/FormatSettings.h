@@ -302,6 +302,7 @@ struct FormatSettings
         bool quote_decimals = false;
         bool escape_forward_slashes = true;
         bool read_named_tuples_as_objects = false;
+        bool extract_named_tuples_as_objects = false;
         bool use_string_type_for_ambiguous_paths_in_named_tuples_inference_from_objects = false;
         bool write_named_tuples_as_objects = true;
         bool skip_null_value_in_named_tuples = false;
