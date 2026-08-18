@@ -1397,8 +1397,11 @@ public:
             /// depend on the declaration order. Named tuples read from objects only
             /// (like the scalar extraction path and the JSON input formats under
             /// `input_format_json_named_tuples_as_objects`), unless the historical
-            /// positional behavior is requested via the setting.
-            if (!name_to_index_map.empty() && format_settings.json.extract_named_tuples_as_objects)
+            /// positional behavior is requested via the setting. The JSON data
+            /// type's typed paths are exempt: they keep positional fill, so the
+            /// gate is armed only by the JSONExtract function family.
+            if (!name_to_index_map.empty() && insert_settings.named_tuples_from_objects_only
+                && format_settings.json.extract_named_tuples_as_objects)
             {
                 error = "cannot read named Tuple value from JSON array. You can disable setting "
                         "json_extract_named_tuples_as_objects to fill named tuples from arrays positionally";
