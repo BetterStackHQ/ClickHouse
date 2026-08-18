@@ -49,6 +49,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"mv_select_plan_cache_max_variants_per_view", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
             {"use_materialized_view_select_plan_cache", false, false, "New setting to cache the analyzed select plan of a materialized view across inserted blocks and inserts."},
             {"materialized_view_select_plan_cache_max_variants", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
+            {"json_extract_named_tuples_as_objects", false, true, "New setting: the `JSONExtract` family and typed JSON paths fill named tuples from JSON objects only, instead of the historical positional fill from arrays. Unnamed tuples still fill positionally."},
         });
         addSettingsChanges(settings_changes_history, "26.7",
         {

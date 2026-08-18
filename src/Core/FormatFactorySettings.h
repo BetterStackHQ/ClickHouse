@@ -552,6 +552,11 @@ Ignore unknown keys in json object for named tuples.
 
 Enabled by default.
 )", 0) \
+    DECLARE(Bool, json_extract_named_tuples_as_objects, true, R"(
+Extract named tuples from JSON objects only in the `JSONExtract` family of functions and in typed JSON paths. When disabled, a JSON array fills a named tuple positionally (the historical behavior), so which array element lands in which named field depends on the tuple's declaration order. Unnamed tuples always fill positionally from arrays regardless of this setting.
+
+Enabled by default.
+)", 0) \
     DECLARE(Bool, input_format_json_defaults_for_missing_elements_in_named_tuple, true, R"(
 Insert default values for missing elements in JSON object while parsing named tuple.
 This setting works only when setting `input_format_json_named_tuples_as_objects` is enabled.
