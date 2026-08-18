@@ -9,7 +9,7 @@ CREATE TABLE t_mvpci_src (k UInt64, v UInt64) ENGINE = MergeTree ORDER BY k;
 CREATE TABLE t_mvpci_dst (k UInt64, v UInt64) ENGINE = MergeTree ORDER BY k;
 CREATE MATERIALIZED VIEW t_mvpci_mv TO t_mvpci_dst AS SELECT k, v FROM t_mvpci_src;
 
-SET use_mv_select_plan_cache = 1;
+SET use_materialized_view_select_plan_cache = 1;
 
 INSERT INTO t_mvpci_src VALUES (1, 10);
 INSERT INTO t_mvpci_src VALUES (2, 20);
@@ -39,6 +39,15 @@ SELECT k, v, extra FROM t_mvpci_dst WHERE k = 7;
 -- Different input headers (column-subset inserts) are distinct cache variants.
 INSERT INTO t_mvpci_src (k) VALUES (8);
 SELECT k, v, extra FROM t_mvpci_dst WHERE k = 8;
+
+-- A metadata change on the target table alone also invalidates.
+ALTER TABLE t_mvpci_dst MODIFY COLUMN extra UInt64 DEFAULT 1;
+INSERT INTO t_mvpci_src VALUES (9, 90, 4);
+SELECT k, v, extra FROM t_mvpci_dst WHERE k = 9;
+SYSTEM FLUSH LOGS query_views_log;
+SELECT sum(ProfileEvents['MaterializedViewSelectPlanCacheRebuilds']) >= 1 AS rebuilt
+FROM system.query_views_log
+WHERE view_name = currentDatabase() || '.t_mvpci_mv';
 
 DROP VIEW t_mvpci_mv;
 DROP TABLE t_mvpci_src;

@@ -7604,10 +7604,17 @@ Only has an effect in ClickHouse Cloud. Number of background threads for specula
 )", 0) \
     DECLARE(Bool, use_async_executor_for_materialized_views, false, R"(
 Use async and potentially multithreaded execution of materialized view query, can speedup views processing during INSERT, but also consume more memory.)", 0) \
-    DECLARE(Bool, use_mv_select_plan_cache, false, R"(
-Cache the analysed and optimized select plan of a materialized view across inserted blocks and across inserts, so pushing a block binds it to a prepared plan instead of re-running query analysis and planning. The cache lives on the view, keyed by the input block structure, changed settings, effective user and roles, and the analyzer choice; it is rebuilt when the view query or the metadata of the involved tables change. View selects containing function calls that analysis may fold into session- or time-dependent constants (such as `now` or `currentUser` over constant arguments) are never cached.)", 0) \
-    DECLARE(UInt64, mv_select_plan_cache_max_variants_per_view, 16, R"(
-Maximum number of select plan variants (distinct combinations of input block structure, settings, user and roles, and analyzer choice) cached per materialized view when `use_mv_select_plan_cache` is enabled. The oldest variant is replaced beyond the limit.)", 0) \
+    DECLARE(Bool, use_materialized_view_select_plan_cache, false, R"(
+Cache the analyzed and optimized select plan of a materialized view across inserted blocks and inserts, instead of re-planning the view query for every pushed block. The cache is invalidated when the view query, the metadata of the involved tables, SQL user defined functions, or row policies change. View selects that would freeze analysis-time state into the plan (such as `now` over constant arguments, subqueries, or reads from other tables) are never cached.
+
+Possible values:
+
+- 0 — Disabled.
+- 1 — Enabled.
+)", 0) \
+    DECLARE(UInt64, materialized_view_select_plan_cache_max_variants, 16, R"(
+Maximum number of select plan variants (distinct combinations of input block structure, settings, user and roles, and analyzer choice) cached per materialized view when [use_materialized_view_select_plan_cache](#use_materialized_view_select_plan_cache) is enabled. The oldest variant is replaced beyond the limit.
+)", 0) \
     DECLARE(Int64, ignore_cold_parts_seconds, 0, R"(
 Only has an effect in ClickHouse Cloud. Exclude new data parts from SELECT queries until they're either pre-warmed (see [cache_populated_by_fetch](merge-tree-settings.md/#cache_populated_by_fetch)) or this many seconds old. Only for Replicated-/SharedMergeTree.
 )", 0) \

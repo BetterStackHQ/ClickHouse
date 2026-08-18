@@ -8,6 +8,7 @@
 #include <Core/Block_fwd.h>
 #include <Core/Names.h>
 #include <Processors/QueryPlan/ISourceStep.h>
+#include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 
 namespace DB
@@ -20,46 +21,54 @@ class IStorage;
 /// Placeholder for the view-source read inside a cached materialized view select plan.
 /// Present only in cached plan skeletons; before execution every marker is replaced with
 /// a `ReadFromPreparedSource` over the inserted block, so it is never executed itself.
-class MVCachedSourceMarkerStep final : public ISourceStep
+class MaterializedViewCachedSourceMarkerStep final : public ISourceStep
 {
 public:
-    explicit MVCachedSourceMarkerStep(SharedHeader output_header_);
+    explicit MaterializedViewCachedSourceMarkerStep(SharedHeader output_header_);
 
-    String getName() const override { return "MVCachedSourceMarker"; }
+    String getName() const override { return "MaterializedViewCachedSourceMarker"; }
     void initializePipeline(QueryPipelineBuilder & pipeline, const BuildQueryPipelineSettings & settings) override;
     QueryPlanStepPtr clone() const override;
 };
 
-/// Per-view cache of the analysed and optimized select plan of a materialized view, so
+/// Per-view cache of the analyzed and optimized select plan of a materialized view, so
 /// that pushing a block does not re-run query analysis and planning (which dominates
 /// insert latency for large view queries). Owned by `StorageMaterializedView`, so its
 /// lifetime follows the view: `DROP`/`DETACH` frees it and a server restart starts cold.
 ///
 /// Entries are stored per "variant": the input block structure, the changed settings,
 /// the effective user and roles, and the analyzer choice of the insert context. Each
-/// entry also remembers a structure hash (metadata versions of the involved tables and
-/// the select query tree); when it mismatches — e.g. after `ALTER TABLE ... MODIFY QUERY`
-/// — the entry is rebuilt in place. There is no eviction policy, only a bound on the
-/// number of variants to guard against pathological churn.
-class MVSelectPlanCache
+/// entry also remembers a structure hash (metadata versions of the involved tables, the
+/// select query tree, resolved SQL user defined function bodies, and the effective row
+/// policy of the source table); when it mismatches, e.g. after `ALTER TABLE ... MODIFY
+/// QUERY`, the entry is rebuilt in place. Entries are replaced oldest-first beyond a
+/// per-view variant bound; there is no other eviction.
+class MaterializedViewSelectPlanCache
 {
 public:
     struct Entry
     {
         /// The optimized select plan with every view-source read replaced by
-        /// `MVCachedSourceMarkerStep`. Cloned per use; never executed directly.
+        /// `MaterializedViewCachedSourceMarkerStep`. Cloned per use; never executed directly.
         QueryPlan plan;
         /// Conversion of the select output to the target table structure
         /// (shared safely between concurrently running pipelines).
         ExpressionActionsPtr conversion_actions;
-        /// Hash of the metadata versions and the select query this entry was built
-        /// against. A mismatch means the entry is stale and must be rebuilt.
+        /// The optimization settings the plan was optimized and is rebuilt with
+        /// (fixed per variant; kept here so cache hits do not reconstruct them).
+        /// Set for every cacheable entry; absent on negative entries.
+        std::optional<QueryPlanOptimizationSettings> optimization_settings;
+        /// Hash of everything this entry was built against (see the class comment).
+        /// A mismatch means the entry is stale and must be rebuilt.
         UInt64 structure_hash = 0;
         /// A negative entry: this view select must always use the non-cached path
-        /// (analysis-time volatile constants, or a plan that cannot be cloned).
+        /// (analysis-time volatile constructs, reads besides the view source, or a
+        /// plan that cannot be cloned).
         bool cacheable = true;
     };
     using EntryPtr = std::shared_ptr<const Entry>;
+
+    ~MaterializedViewSelectPlanCache();
 
     /// Returns the entry for the variant, or nullptr on miss or on structure mismatch
     /// (the stale entry is removed so the caller re-captures).
@@ -82,11 +91,24 @@ std::vector<QueryPlan::Node *> collectViewSourceNodes(QueryPlan & plan, const IS
 /// The marker nodes of a cloned cached plan skeleton.
 std::vector<QueryPlan::Node *> collectMarkerNodes(QueryPlan & plan);
 
-/// Whether the select query contains a function call that query analysis may fold into
-/// a constant whose value depends on the moment or session of analysis (`now`,
-/// `currentUser`, `getSetting` over literals, ...). Such view selects must not be
-/// cached, because the cached plan would freeze the folded value. Unknown functions
-/// (e.g. executable user defined functions) are conservatively treated as volatile.
-bool selectContainsAnalysisTimeVolatileConstants(const ASTPtr & select_query, const ContextPtr & context);
+/// All leaf nodes of the plan (the sources it reads from).
+std::vector<QueryPlan::Node *> collectLeafNodes(QueryPlan & plan);
+
+/// Result of the AST-level cacheability analysis of a view select.
+struct SelectPlanCacheAnalysis
+{
+    /// False when the select contains constructs that analysis freezes into the plan
+    /// and that must stay per-block: function calls foldable into session- or
+    /// time-dependent constants (`now`, `currentUser` over constant arguments),
+    /// subqueries of any kind (folded scalars, `IN`, `EXISTS`), `joinGet` (holds a
+    /// table lock inside the plan), executable user defined functions, and unknown
+    /// function names.
+    bool cacheable = true;
+    /// Combined hash of the resolved SQL user defined function bodies the select
+    /// calls (they are inlined during analysis, so a redefinition must invalidate).
+    UInt64 udf_bodies_hash = 0;
+};
+
+SelectPlanCacheAnalysis analyzeSelectForPlanCache(const ASTPtr & select_query, const ContextPtr & context);
 
 }

@@ -435,11 +435,12 @@
     M(QueryAnalysisMicroseconds, "Total time spent building the query tree and running analyzer passes (resolves identifiers, types, expressions).", ValueType::Microseconds) \
     M(QueryPlanBuildMicroseconds, "Total time spent building the QueryPlan from the analyzed query tree.", ValueType::Microseconds) \
     M(QueryPipelineBuildMicroseconds, "Total time spent constructing the QueryPipeline from the optimized QueryPlan.", ValueType::Microseconds) \
-    M(MVSelectPlanCacheHits, "A materialized view select plan was taken from the cache instead of re-running analysis and planning for an inserted block.", ValueType::Number) \
-    M(MVSelectPlanCacheMisses, "A materialized view select plan was not found in the cache and was captured from a full planning of the inserted block.", ValueType::Number) \
-    M(MVSelectPlanCacheRebuilds, "A cached materialized view select plan was rebuilt because the view query or the metadata of the involved tables changed.", ValueType::Number) \
-    M(MVSelectPlanCacheSkippedNonDeterministic, "A materialized view select was not cached because it contains function calls that analysis may fold into session- or time-dependent constants.", ValueType::Number) \
-    M(MVSelectPlanCacheSkippedNonCloneable, "A materialized view select was not cached because its query plan contains a step that does not support cloning.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheHits, "Number of materialized view select plans taken from the plan cache instead of re-planning an inserted block.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheMisses, "Number of inserted blocks planned without a cached materialized view select plan (absent, stale, or uncacheable).", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheRebuilds, "Number of cached materialized view select plans invalidated by a change of the view query, table metadata, UDF bodies, or row policies.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheSkippedNonDeterministic, "Number of materialized view selects not cached because analysis would freeze session- or time-dependent constants, subqueries, or table locks into the plan.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheSkippedNonCloneable, "Number of materialized view selects not cached because a query plan step does not support cloning.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheSkippedForeignReads, "Number of materialized view selects not cached because the plan reads from something besides the view source.", ValueType::Number) \
     \
     M(DeltaLakePartitionPrunedFiles, "Number of skipped files during DeltaLake partition pruning", ValueType::Number) \
     M(DeltaLakeSnapshotInitializations, "Number of times a DeltaLake table snapshot was initialized (loaded from object storage)", ValueType::Number) \
