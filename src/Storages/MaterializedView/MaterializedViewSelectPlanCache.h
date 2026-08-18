@@ -3,7 +3,9 @@
 #include <deque>
 #include <map>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
+
+#include <Common/SharedMutex.h>
 
 #include <Core/Block_fwd.h>
 #include <Core/Names.h>
@@ -78,7 +80,11 @@ public:
     void put(const UInt128 & variant_key, EntryPtr entry, size_t max_variants);
 
 private:
-    std::mutex mutex;
+    /// Reader-writer: the per-block hot path is `get`, which takes only a shared
+    /// lock, so concurrent inserts into one view do not serialize on the cache.
+    /// The exclusive lock is taken only by `put` and by stale-entry eviction,
+    /// both rare (capture and invalidation events).
+    SharedMutex mutex;
     std::map<UInt128, EntryPtr> entries;
     std::deque<UInt128> insertion_order;
 };

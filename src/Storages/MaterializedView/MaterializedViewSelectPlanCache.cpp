@@ -56,21 +56,29 @@ MaterializedViewSelectPlanCache::~MaterializedViewSelectPlanCache()
 
 MaterializedViewSelectPlanCache::EntryPtr MaterializedViewSelectPlanCache::get(const UInt128 & variant_key, UInt64 structure_hash)
 {
+    {
+        std::shared_lock lock(mutex);
+        auto it = entries.find(variant_key);
+        if (it == entries.end())
+            return nullptr;
+        if (it->second->structure_hash == structure_hash)
+            return it->second;
+    }
+
+    /// Stale after a metadata, query, UDF, or row policy change: drop so the
+    /// caller re-captures. Re-check under the exclusive lock — another thread
+    /// may have already dropped or replaced the entry.
     std::lock_guard lock(mutex);
     auto it = entries.find(variant_key);
     if (it == entries.end())
         return nullptr;
-    if (it->second->structure_hash != structure_hash)
-    {
-        /// Stale after a metadata, query, UDF, or row policy change: drop so the
-        /// caller re-captures.
-        ProfileEvents::increment(ProfileEvents::MaterializedViewSelectPlanCacheRebuilds);
-        entries.erase(it);
-        std::erase(insertion_order, variant_key);
-        CurrentMetrics::sub(CurrentMetrics::MaterializedViewSelectPlanCacheEntries);
-        return nullptr;
-    }
-    return it->second;
+    if (it->second->structure_hash == structure_hash)
+        return it->second;
+    ProfileEvents::increment(ProfileEvents::MaterializedViewSelectPlanCacheRebuilds);
+    entries.erase(it);
+    std::erase(insertion_order, variant_key);
+    CurrentMetrics::sub(CurrentMetrics::MaterializedViewSelectPlanCacheEntries);
+    return nullptr;
 }
 
 void MaterializedViewSelectPlanCache::put(const UInt128 & variant_key, EntryPtr entry, size_t max_variants)
