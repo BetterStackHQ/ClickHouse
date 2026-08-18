@@ -1,7 +1,7 @@
 #include <thread>
 #include <Storages/StorageMaterializedView.h>
 
-#include <Storages/MaterializedView/MVSelectPlanCache.h>
+#include <Storages/MaterializedView/MaterializedViewSelectPlanCache.h>
 #include <Storages/MaterializedView/RefreshTask.h>
 
 #include <Parsers/ASTSelectWithUnionQuery.h>
@@ -123,7 +123,7 @@ StorageMaterializedView::StorageMaterializedView(
     const String & comment,
     bool is_restore_from_backup)
     : StorageWithCommonVirtualColumns(table_id_), WithMutableContext(local_context->getGlobalContext())
-    , select_plan_cache(std::make_shared<MVSelectPlanCache>())
+    , select_plan_cache(std::make_shared<MaterializedViewSelectPlanCache>())
 {
     StorageInMemoryMetadata storage_metadata;
     storage_metadata.setColumns(columns_);
