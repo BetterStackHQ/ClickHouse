@@ -1400,9 +1400,8 @@ public:
             /// positional behavior is requested via the setting.
             if (!name_to_index_map.empty() && format_settings.json.extract_named_tuples_as_objects)
             {
-                error = fmt::format(
-                    "cannot read named Tuple value from JSON array: {} (set json_extract_named_tuples_as_objects = 0 for positional fill)",
-                    jsonElementToString<JSONParser>(element, format_settings));
+                error = "cannot read named Tuple value from JSON array. You can disable setting "
+                        "json_extract_named_tuples_as_objects to fill named tuples from arrays positionally";
                 return false;
             }
 
