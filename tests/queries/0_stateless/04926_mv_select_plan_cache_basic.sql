@@ -12,7 +12,7 @@ CREATE MATERIALIZED VIEW t_mvpc_mv TO t_mvpc_dst AS
     FROM t_mvpc_src
     GROUP BY bucket;
 
-SET use_mv_select_plan_cache = 1;
+SET use_materialized_view_select_plan_cache = 1;
 
 INSERT INTO t_mvpc_src SELECT number, toString(number % 7), number / 3 FROM numbers(1000);
 INSERT INTO t_mvpc_src SELECT number, toString(number % 7), number / 3 FROM numbers(1000, 1000);
@@ -22,7 +22,7 @@ SELECT bucket, sum(cnt), round(sum(sum_v), 3) FROM t_mvpc_dst GROUP BY bucket OR
 -- The same inserts without the cache must produce the identical result.
 DROP TABLE t_mvpc_dst SYNC;
 CREATE TABLE t_mvpc_dst (bucket UInt64, cnt SimpleAggregateFunction(sum, UInt64), sum_v SimpleAggregateFunction(sum, Float64), top_s AggregateFunction(anyHeavy, String)) ENGINE = AggregatingMergeTree ORDER BY bucket;
-SET use_mv_select_plan_cache = 0;
+SET use_materialized_view_select_plan_cache = 0;
 INSERT INTO t_mvpc_src SELECT number, toString(number % 7), number / 3 FROM numbers(1000);
 INSERT INTO t_mvpc_src SELECT number, toString(number % 7), number / 3 FROM numbers(1000, 1000);
 SELECT bucket, sum(cnt), round(sum(sum_v), 3) FROM t_mvpc_dst GROUP BY bucket ORDER BY bucket;
@@ -31,8 +31,8 @@ SELECT bucket, sum(cnt), round(sum(sum_v), 3) FROM t_mvpc_dst GROUP BY bucket OR
 -- are attributed to the view, so they are read from `query_views_log`.
 SYSTEM FLUSH LOGS query_views_log;
 SELECT
-    sum(ProfileEvents['MVSelectPlanCacheMisses']) AS misses,
-    sum(ProfileEvents['MVSelectPlanCacheHits']) AS hits
+    sum(ProfileEvents['MaterializedViewSelectPlanCacheMisses']) >= 1 AS has_misses,
+    sum(ProfileEvents['MaterializedViewSelectPlanCacheHits']) >= 1 AS has_hits
 FROM system.query_views_log
 WHERE view_name = currentDatabase() || '.t_mvpc_mv';
 
