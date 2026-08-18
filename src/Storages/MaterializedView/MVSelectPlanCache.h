@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include <Core/Block_fwd.h>
+#include <Core/Names.h>
 #include <Processors/QueryPlan/ISourceStep.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 

@@ -3,6 +3,8 @@
 #include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <Common/CurrentMetrics.h>
 #include <Functions/FunctionFactory.h>
+#include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
+#include <Parsers/ASTCreateSQLFunctionQuery.h>
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTLiteral.h>
 #include <Processors/QueryPlan/ReadFromPreparedSource.h>
@@ -118,9 +120,9 @@ static bool allArgumentsAreLiterals(const ASTFunction & function)
     return true;
 }
 
-bool selectContainsAnalysisTimeVolatileConstants(const ASTPtr & select_query, const ContextPtr & context)
+static bool containsVolatileConstants(const IAST * root, const ContextPtr & context, NameSet & visited_udfs)
 {
-    std::vector<const IAST *> stack{select_query.get()};
+    std::vector<const IAST *> stack{root};
     while (!stack.empty())
     {
         const auto * ast = stack.back();
@@ -131,18 +133,42 @@ bool selectContainsAnalysisTimeVolatileConstants(const ASTPtr & select_query, co
         const auto * function = ast->as<ASTFunction>();
         if (!function)
             continue;
+        /// Structural pseudo-functions; the calls inside them are scanned as children.
+        if (function->name == "lambda" || function->name == "grouping" || function->name == "untuple")
+            continue;
         if (AggregateFunctionFactory::instance().isAggregateFunctionName(function->name))
             continue;
-        auto resolver = FunctionFactory::instance().tryGet(function->name, context);
-        if (!resolver)
-            return true;
-        /// Only calls that analysis can fold matter: a non-deterministic function over
-        /// non-constant arguments is executed per row by the cached plan exactly as by
-        /// a freshly planned one.
-        if (!resolver->isDeterministic() && allArgumentsAreLiterals(*function))
-            return true;
+        if (auto resolver = FunctionFactory::instance().tryGet(function->name, context))
+        {
+            /// Only calls that analysis can fold matter: a non-deterministic function
+            /// over non-constant arguments is executed per row by the cached plan
+            /// exactly as by a freshly planned one.
+            if (!resolver->isDeterministic() && allArgumentsAreLiterals(*function))
+                return true;
+            continue;
+        }
+        /// SQL user defined functions are inlined during analysis: scan the body with
+        /// the same rule (cycle-guarded). Anything else — executable user defined
+        /// functions, unknown names — is conservatively treated as volatile.
+        if (auto create_function_query = UserDefinedSQLFunctionFactory::instance().tryGet(function->name))
+        {
+            if (!visited_udfs.emplace(function->name).second)
+                continue;
+            const auto * create_function = create_function_query->as<ASTCreateSQLFunctionQuery>();
+            if (!create_function || !create_function->function_core
+                || containsVolatileConstants(create_function->function_core.get(), context, visited_udfs))
+                return true;
+            continue;
+        }
+        return true;
     }
     return false;
+}
+
+bool selectContainsAnalysisTimeVolatileConstants(const ASTPtr & select_query, const ContextPtr & context)
+{
+    NameSet visited_udfs;
+    return containsVolatileConstants(select_query.get(), context, visited_udfs);
 }
 
 }
