@@ -45,6 +45,8 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"throw_on_hive_partitioning_resolution_failure", false, false, "New setting to fail the query when Hive-style partitioning detection for an object storage table cannot list the storage. Disabled here to keep the pre-existing behavior of running without the Hive partition columns, and enabled by default from 26.8."},
             {"use_mv_select_plan_cache", false, false, "New setting to cache the analysed select plan of a materialized view across inserted blocks and inserts."},
             {"mv_select_plan_cache_max_variants_per_view", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
+            {"use_materialized_view_select_plan_cache", false, false, "New setting to cache the analyzed select plan of a materialized view across inserted blocks and inserts."},
+            {"materialized_view_select_plan_cache_max_variants", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
             {"framing_output_format", "None", "None", "New setting to select a framing format that multiplexes data, totals, extremes, progress, logs, and profile events packets in a single output stream over HTTP."},
             {"output_format_image_time_multiplier_seconds", 1, 1, "New setting controlling the numerator of the time unit of the `t` column, which makes image output formats such as `PNG` produce an animation."},
             {"output_format_image_time_divisor_seconds", 60, 60, "New setting controlling the denominator of the time unit of the `t` column, which makes image output formats such as `PNG` produce an animation."},
