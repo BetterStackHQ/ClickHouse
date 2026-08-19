@@ -1,7 +1,6 @@
 #include "config.h"
 
 #include <Formats/JSONExtractTree.h>
-#include <Common/StringUtils.h>
 #include <Formats/SchemaInferenceUtils.h>
 
 #include <Core/AccurateComparison.h>
@@ -1389,7 +1388,8 @@ public:
     {
         String res(name);
         for (auto & c : res)
-            c = toLowerASCII(c);
+            if (c >= 'A' && c <= 'Z')
+                c += 'a' - 'A';
         return res;
     }
 
@@ -1507,7 +1507,8 @@ public:
                     {
                         lowered_key_storage.assign(key.data(), key.size());
                         for (auto & c : lowered_key_storage)
-                            c = toLowerASCII(c);
+                            if (c >= 'A' && c <= 'Z')
+                                c += 'a' - 'A';
                         lookup_key = lowered_key_storage;
                     }
                     auto index = lookup_map.find(lookup_key);
