@@ -787,10 +787,24 @@ private:
                 IColumn::Filter default_mask;
                 result = dictionary->getColumn(attribute_names[0], attribute_type, key_columns, key_types, default_mask);
 
-                auto [defaults_column, mask_column] =
-                    getDefaultsShortCircuit(std::move(default_mask), attribute_type, last_argument);
+                /// The declared result type is Nullable when the key argument is Nullable, while the
+                /// dictionary column has the possibly non-Nullable attribute type. A default expression
+                /// may genuinely evaluate to NULL on a row that needs it; casting the defaults to the
+                /// non-Nullable attribute type would then throw `CANNOT_INSERT_NULL_IN_ORDINARY_COLUMN`.
+                /// Cast the defaults to the declared type instead, and lift the dictionary column to it
+                /// physically, so the column always matches its declared type (a mismatch here made
+                /// `if`'s Nullable handling dereference a null pointer, see https://github.com/ClickHouse/ClickHouse/issues/97968).
+                auto short_circuit_type = attribute_type;
+                if (result_type->isNullable() && !attribute_type->isNullable())
+                {
+                    result = makeNullable(result);
+                    short_circuit_type = result_type;
+                }
 
-                restoreShortCircuitColumn(result, defaults_column, mask_column, attribute_type);
+                auto [defaults_column, mask_column] =
+                    getDefaultsShortCircuit(std::move(default_mask), short_circuit_type, last_argument);
+
+                restoreShortCircuitColumn(result, defaults_column, mask_column, short_circuit_type);
             }
             else
             {
