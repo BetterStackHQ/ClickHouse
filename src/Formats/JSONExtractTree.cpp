@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <Formats/JSONExtractTree.h>
+#include <Common/StringUtils.h>
 #include <Formats/SchemaInferenceUtils.h>
 
 #include <Core/AccurateComparison.h>
@@ -64,6 +65,7 @@ namespace DB
 namespace ErrorCodes
 {
     extern const int ILLEGAL_TYPE_OF_ARGUMENT;
+    extern const int BAD_ARGUMENTS;
 }
 
 template <typename JSONParser>
@@ -1350,11 +1352,45 @@ template <typename JSONParser>
 class TupleNode : public JSONExtractTreeNode<JSONParser>
 {
 public:
-    TupleNode(std::vector<std::unique_ptr<JSONExtractTreeNode<JSONParser>>> nested_, const std::vector<String> & explicit_names_)
+    TupleNode(
+        std::vector<std::unique_ptr<JSONExtractTreeNode<JSONParser>>> nested_,
+        const std::vector<String> & explicit_names_,
+        bool case_insensitive_names)
         : nested(std::move(nested_)), explicit_names(explicit_names_)
     {
         for (size_t i = 0; i != explicit_names.size(); ++i)
             name_to_index_map.emplace(explicit_names[i], i);
+
+        /// For the case-insensitive function family, tuple element names match object keys
+        /// case-insensitively (ASCII, like the scalar path's key lookup) through a second map
+        /// of lowered names. Among several case-insensitively matching keys, the first whose
+        /// value is valid for the element type wins - the same first-valid semantics the
+        /// case-sensitive family has for exact duplicate keys (the scalar path takes the
+        /// first occurrence strictly). Element names differing only by case are ambiguous.
+        if (case_insensitive_names)
+        {
+            lowered_names.reserve(explicit_names.size());
+            for (size_t i = 0; i != explicit_names.size(); ++i)
+            {
+                lowered_names.push_back(lowerAscii(explicit_names[i]));
+                auto [it, inserted] = lowercase_name_to_index_map.emplace(lowered_names.back(), i);
+                if (!inserted)
+                    throw Exception(
+                        ErrorCodes::BAD_ARGUMENTS,
+                        "Tuple element names '{}' and '{}' differ only by character case, "
+                        "which is ambiguous for case-insensitive JSON extraction",
+                        explicit_names[it->second],
+                        explicit_names[i]);
+            }
+        }
+    }
+
+    static String lowerAscii(std::string_view name)
+    {
+        String res(name);
+        for (auto & c : res)
+            c = toLowerASCII(c);
+        return res;
     }
 
     bool insertResultToColumn(
@@ -1459,10 +1495,23 @@ public:
             }
             else
             {
+                /// With case-insensitive names, only the lowered map is consulted (no
+                /// exact-match priority), mirroring the scalar path's key lookup.
+                const bool case_insensitive = !lowercase_name_to_index_map.empty();
+                const auto & lookup_map = case_insensitive ? lowercase_name_to_index_map : name_to_index_map;
+                String lowered_key_storage;
                 for (const auto & [key, value] : object)
                 {
-                    auto index = name_to_index_map.find(key);
-                    if (index != name_to_index_map.end())
+                    std::string_view lookup_key = key;
+                    if (case_insensitive)
+                    {
+                        lowered_key_storage.assign(key.data(), key.size());
+                        for (auto & c : lowered_key_storage)
+                            c = toLowerASCII(c);
+                        lookup_key = lowered_key_storage;
+                    }
+                    auto index = lookup_map.find(lookup_key);
+                    if (index != lookup_map.end())
                     {
                         if (nested[index->second]->insertResultToColumn(tuple.getColumn(index->second), value, insert_settings, format_settings, error))
                         {
@@ -1490,6 +1539,10 @@ private:
     std::vector<std::unique_ptr<JSONExtractTreeNode<JSONParser>>> nested;
     std::vector<String> explicit_names;
     std::unordered_map<std::string_view, size_t> name_to_index_map;
+    /// Lowered element names (own the storage for the views in the lowercase map below).
+    std::vector<String> lowered_names;
+    /// Non-empty only for the case-insensitive function family.
+    std::unordered_map<std::string_view, size_t> lowercase_name_to_index_map;
 };
 
 template <typename JSONParser>
@@ -2474,7 +2527,7 @@ private:
 }
 
 template <typename JSONParser>
-std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const DataTypePtr & type, const char * source_for_exception_message)
+std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const DataTypePtr & type, const char * source_for_exception_message, bool case_insensitive_names)
 {
     switch (type->getTypeId())
     {
@@ -2582,13 +2635,13 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
                 case TypeIndex::UUID:
                     return std::make_unique<LowCardinalityUUIDNode<JSONParser>>(is_nullable);
                 default:
-                    return std::make_unique<LowCardinalityNode<JSONParser>>(is_nullable, buildJSONExtractTree<JSONParser>(dictionary_type, source_for_exception_message));
+                    return std::make_unique<LowCardinalityNode<JSONParser>>(is_nullable, buildJSONExtractTree<JSONParser>(dictionary_type, source_for_exception_message, case_insensitive_names));
             }
         }
         case TypeIndex::Nullable:
-            return std::make_unique<NullableNode<JSONParser>>(buildJSONExtractTree<JSONParser>(assert_cast<const DataTypeNullable &>(*type).getNestedType(), source_for_exception_message));
+            return std::make_unique<NullableNode<JSONParser>>(buildJSONExtractTree<JSONParser>(assert_cast<const DataTypeNullable &>(*type).getNestedType(), source_for_exception_message, case_insensitive_names));
         case TypeIndex::Array:
-            return std::make_unique<ArrayNode<JSONParser>>(buildJSONExtractTree<JSONParser>(assert_cast<const DataTypeArray &>(*type).getNestedType(), source_for_exception_message));
+            return std::make_unique<ArrayNode<JSONParser>>(buildJSONExtractTree<JSONParser>(assert_cast<const DataTypeArray &>(*type).getNestedType(), source_for_exception_message, case_insensitive_names));
         case TypeIndex::Tuple:
         {
             const auto & tuple = assert_cast<const DataTypeTuple &>(*type);
@@ -2596,8 +2649,8 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
             std::vector<std::unique_ptr<JSONExtractTreeNode<JSONParser>>> elements;
             elements.reserve(tuple_elements.size());
             for (const auto & tuple_element : tuple_elements)
-                elements.emplace_back(buildJSONExtractTree<JSONParser>(tuple_element, source_for_exception_message));
-            return std::make_unique<TupleNode<JSONParser>>(std::move(elements), tuple.hasExplicitNames() ? tuple.getElementNames() : Strings{});
+                elements.emplace_back(buildJSONExtractTree<JSONParser>(tuple_element, source_for_exception_message, case_insensitive_names));
+            return std::make_unique<TupleNode<JSONParser>>(std::move(elements), tuple.hasExplicitNames() ? tuple.getElementNames() : Strings{}, case_insensitive_names);
         }
         case TypeIndex::Map:
         {
@@ -2611,7 +2664,7 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
                     type->getName());
 
             const auto & value_type = map_type.getValueType();
-            return std::make_unique<MapNode<JSONParser>>(buildJSONExtractTree<JSONParser>(value_type, source_for_exception_message));
+            return std::make_unique<MapNode<JSONParser>>(buildJSONExtractTree<JSONParser>(value_type, source_for_exception_message, case_insensitive_names));
         }
         case TypeIndex::Variant:
         {
@@ -2620,7 +2673,7 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
             std::vector<std::unique_ptr<JSONExtractTreeNode<JSONParser>>> variant_nodes;
             variant_nodes.reserve(variants.size());
             for (const auto & variant : variants)
-                variant_nodes.push_back(buildJSONExtractTree<JSONParser>(variant, source_for_exception_message));
+                variant_nodes.push_back(buildJSONExtractTree<JSONParser>(variant, source_for_exception_message, case_insensitive_names));
             return std::make_unique<VariantNode<JSONParser>>(std::move(variant_nodes), SerializationVariant::getVariantsDeserializeTextOrder(variants));
         }
         case TypeIndex::Dynamic:
@@ -2632,7 +2685,7 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
             std::unordered_map<String, std::unique_ptr<JSONExtractTreeNode<JSONParser>>> typed_path_nodes;
             typed_path_nodes.reserve(typed_paths.size());
             for (const auto & [path, path_type] : typed_paths)
-                typed_path_nodes[path] = buildJSONExtractTree<JSONParser>(path_type, source_for_exception_message);
+                typed_path_nodes[path] = buildJSONExtractTree<JSONParser>(path_type, source_for_exception_message, case_insensitive_names);
 
             switch (object_type.getSchemaFormat())
             {
@@ -2656,16 +2709,16 @@ std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const Data
 
 #if USE_SIMDJSON
 template void jsonElementToString<SimdJSONParser>(const SimdJSONParser::Element & element, WriteBuffer & buf, const FormatSettings & format_settings);
-template std::unique_ptr<JSONExtractTreeNode<SimdJSONParser>> buildJSONExtractTree<SimdJSONParser>(const DataTypePtr & type, const char * source_for_exception_message);
+template std::unique_ptr<JSONExtractTreeNode<SimdJSONParser>> buildJSONExtractTree<SimdJSONParser>(const DataTypePtr & type, const char * source_for_exception_message, bool case_insensitive_names);
 #endif
 
 #if USE_RAPIDJSON
 template void jsonElementToString<RapidJSONParser>(const RapidJSONParser::Element & element, WriteBuffer & buf, const FormatSettings & format_settings);
-template std::unique_ptr<JSONExtractTreeNode<RapidJSONParser>> buildJSONExtractTree<RapidJSONParser>(const DataTypePtr & type, const char * source_for_exception_message);
+template std::unique_ptr<JSONExtractTreeNode<RapidJSONParser>> buildJSONExtractTree<RapidJSONParser>(const DataTypePtr & type, const char * source_for_exception_message, bool case_insensitive_names);
 template bool tryGetNumericValueFromJSONElement<RapidJSONParser, Float64>(Float64 & value, const RapidJSONParser::Element & element, bool convert_bool_to_number, bool allow_type_conversion, bool no_int_truncation_from_double, bool precise_float_parsing, String & error);
 #else
 template void jsonElementToString<DummyJSONParser>(const DummyJSONParser::Element & element, WriteBuffer & buf, const FormatSettings & format_settings);
-template std::unique_ptr<JSONExtractTreeNode<DummyJSONParser>> buildJSONExtractTree<DummyJSONParser>(const DataTypePtr & type, const char * source_for_exception_message);
+template std::unique_ptr<JSONExtractTreeNode<DummyJSONParser>> buildJSONExtractTree<DummyJSONParser>(const DataTypePtr & type, const char * source_for_exception_message, bool case_insensitive_names);
 template bool tryGetNumericValueFromJSONElement<DummyJSONParser, Float64>(Float64 & value, const DummyJSONParser::Element & element, bool convert_bool_to_number, bool allow_type_conversion, bool no_int_truncation_from_double, bool precise_float_parsing, String & error);
 template bool tryGetNumericValueFromJSONElement<DummyJSONParser, Int64>(Int64 & value, const DummyJSONParser::Element & element, bool convert_bool_to_number, bool allow_type_conversion, bool no_int_truncation_from_double, bool precise_float_parsing, String & error);
 template bool tryGetNumericValueFromJSONElement<DummyJSONParser, UInt64>(UInt64 & value, const DummyJSONParser::Element & element, bool convert_bool_to_number, bool allow_type_conversion, bool no_int_truncation_from_double, bool precise_float_parsing, String & error);
