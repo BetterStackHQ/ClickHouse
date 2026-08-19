@@ -81,6 +81,19 @@ concept Preparable = requires (T t)
     );
 };
 
+/// `prepare` variant that also receives whether the function family matches
+/// JSON object keys case-insensitively (the `*CaseInsensitive` functions).
+template <typename T>
+concept PreparableWithCaseSensitivity = requires (T t)
+{
+    t.prepare(
+        std::declval<const char *>(),
+        std::declval<const ColumnsWithTypeAndName&>(),
+        std::declval<const DataTypePtr&>(),
+        std::declval<bool>()
+    );
+};
+
 /// Functions to parse JSONs and extract values from it.
 /// The first argument of all these functions gets a JSON,
 /// after that there are any number of arguments specifying path to a desired part from the JSON's root.
@@ -142,7 +155,9 @@ public:
             Impl<JSONParser> impl;
 
             /// prepare() does Impl-specific preparation before handling each row.
-            if constexpr (Preparable<Impl<JSONParser>>)
+            if constexpr (PreparableWithCaseSensitivity<Impl<JSONParser>>)
+                impl.prepare(Name::name, arguments, result_type, case_insensitive);
+            else if constexpr (Preparable<Impl<JSONParser>>)
                 impl.prepare(Name::name, arguments, result_type);
 
             using Element = typename JSONParser::Element;
@@ -1061,9 +1076,9 @@ public:
 
     static size_t getNumberOfIndexArguments(const ColumnsWithTypeAndName & arguments) { return arguments.size() - 2; }
 
-    void prepare(const char * function_name, const ColumnsWithTypeAndName &, const DataTypePtr & result_type)
+    void prepare(const char * function_name, const ColumnsWithTypeAndName &, const DataTypePtr & result_type, bool case_insensitive_names)
     {
-        extract_tree = buildJSONExtractTree<JSONParser>(result_type, function_name);
+        extract_tree = buildJSONExtractTree<JSONParser>(result_type, function_name, case_insensitive_names);
         insert_settings.insert_default_on_invalid_elements_in_complex_types = true;
         insert_settings.named_tuples_from_objects_only = true;
     }
@@ -1106,11 +1121,11 @@ public:
 
     static size_t getNumberOfIndexArguments(const ColumnsWithTypeAndName & arguments) { return arguments.size() - 2; }
 
-    void prepare(const char * function_name, const ColumnsWithTypeAndName &, const DataTypePtr & result_type)
+    void prepare(const char * function_name, const ColumnsWithTypeAndName &, const DataTypePtr & result_type, bool case_insensitive_names)
     {
         const auto tuple_type = typeid_cast<const DataTypeArray *>(result_type.get())->getNestedType();
         const auto value_type = typeid_cast<const DataTypeTuple *>(tuple_type.get())->getElements()[1];
-        extract_tree = buildJSONExtractTree<JSONParser>(value_type, function_name);
+        extract_tree = buildJSONExtractTree<JSONParser>(value_type, function_name, case_insensitive_names);
         insert_settings.insert_default_on_invalid_elements_in_complex_types = true;
         insert_settings.named_tuples_from_objects_only = true;
     }
@@ -1900,6 +1915,8 @@ Parses JSON and extracts a string using case-insensitive key matching. This func
     {
         FunctionDocumentation::Description description = R"(
 Parses JSON and extracts a value of the given ClickHouse data type using case-insensitive key matching. This function is similar to [`JSONExtract`](#JSONExtract).
+
+When the requested type contains a named `Tuple`, the tuple element names also match JSON object keys case-insensitively (ASCII). Element names that differ only by character case are rejected as ambiguous.
         )";
         FunctionDocumentation::Syntax syntax = "JSONExtractCaseInsensitive(json [, indices_or_keys...], return_type)";
         FunctionDocumentation::Arguments arguments = {
