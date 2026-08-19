@@ -241,7 +241,12 @@ void checkStoragesSupportTransactions(const PlannerContextPtr & planner_context)
   * 4. Extract filters from ReadFromDummy query plan steps from query plan leaf nodes.
   */
 
-FiltersForTableExpressionMap collectFiltersForAnalysis(const QueryTreeNodePtr & query_tree, const QueryTreeNodes & table_nodes, const ContextPtr & query_context, const ActionsDAG * post_filter)
+FiltersForTableExpressionMap collectFiltersForAnalysis(
+    const QueryTreeNodePtr & query_tree,
+    const QueryTreeNodes & table_nodes,
+    const ContextPtr & query_context,
+    const ActionsDAG * post_filter,
+    QueryProcessingStage::Enum to_stage)
 {
     bool collect_filters = false;
     const auto & settings = query_context->getSettingsRef();
@@ -322,7 +327,14 @@ FiltersForTableExpressionMap collectFiltersForAnalysis(const QueryTreeNodePtr & 
         dummy_storage_to_table.emplace(dummy_storage, from_table_expression);
     }
 
-    SelectQueryOptions select_query_options;
+    /// Plan the dummy query to the same processing stage as the real query.
+    /// A default (Complete) stage would plan constructs the real execution
+    /// never reaches - e.g. on a shard executing at WithMergeableState, the
+    /// IN-set subqueries above the aggregation boundary - and anything that
+    /// throws while planning them (such as the `max_distributed_depth` check
+    /// for a nested distributed read) would fail the query for a plan that is
+    /// discarded and never executed.
+    SelectQueryOptions select_query_options(to_stage);
     Planner planner(updated_query_tree, select_query_options);
     planner.buildQueryPlanIfNeeded();
 
@@ -411,7 +423,7 @@ FiltersForTableExpressionMap collectFiltersForAnalysis(const QueryTreeNodePtr & 
     auto table_expressions_nodes
         = extractTableExpressions(query_tree_node, false /* add_array_join */, true /* recursive */);
 
-    return collectFiltersForAnalysis(query_tree_node, table_expressions_nodes, context, post_filter);
+    return collectFiltersForAnalysis(query_tree_node, table_expressions_nodes, context, post_filter, select_query_options.to_stage);
 }
 
 /// Extend lifetime of query context, storages, and table locks
