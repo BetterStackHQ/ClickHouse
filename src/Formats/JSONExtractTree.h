@@ -51,8 +51,11 @@ public:
 };
 
 /// Build a tree for insertion JSON element into a column with provided data type.
+/// case_insensitive_names: tuple element names match JSON object keys ASCII-case-insensitively
+/// (used by the `JSONExtract*CaseInsensitive` function family; among several matching keys the
+/// first with a type-valid value wins, like the case-sensitive family's duplicate-key handling).
 template <typename JSONParser>
-std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const DataTypePtr & type, const char * source_for_exception_message);
+std::unique_ptr<JSONExtractTreeNode<JSONParser>> buildJSONExtractTree(const DataTypePtr & type, const char * source_for_exception_message, bool case_insensitive_names = false);
 
 template <typename JSONParser>
 void jsonElementToString(const typename JSONParser::Element & element, WriteBuffer & buf, const FormatSettings & format_settings);
