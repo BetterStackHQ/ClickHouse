@@ -209,7 +209,11 @@ public:
         if (unmerged > 0 || centroids.size() > params.max_centroids)
         {
             // unmerged > 0 implies centroids.size() > 0, hence *l is valid below
-            RadixSort<RadixSortTraits>::executeLSD(centroids.data(), centroids.size());
+            /// A single centroid is already sorted, and the radix sort has a fixed cost - it
+            /// allocates and zeroes its histograms whatever the size of the array. States holding
+            /// one centroid are the common case when merging parts of per-row states.
+            if (centroids.size() > 1)
+                RadixSort<RadixSortTraits>::executeLSD(centroids.data(), centroids.size());
 
             /// A pair of consecutive bars of the histogram.
             auto l = centroids.begin();
