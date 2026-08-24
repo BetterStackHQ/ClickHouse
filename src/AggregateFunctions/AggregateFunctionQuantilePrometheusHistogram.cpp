@@ -5,6 +5,7 @@
 #include <Common/HashTable/HashMap.h>
 #include <Common/NaNUtils.h>
 
+#include <algorithm>
 #include <numeric>
 
 
@@ -28,8 +29,19 @@ struct QuantilePrometheusHistogram
     using UnderlyingType = NativeType<Value>;
     using Hasher = HashCRC32<UnderlyingType>;
 
-    /// When creating, the hash table must be small.
-    using Map = HashMapWithStackMemory<UnderlyingType, CumulativeHistogramValue, Hasher, 4>;
+    /// When creating, the hash table must be small: histograms wider than the inline table are
+    /// presized in `merge` and `deserialize` below, so they pay for one right-sized allocation
+    /// rather than for a chain of doubling rehashes, and a larger inline table would be dead
+    /// weight for them.
+    /// The key is a float, so its hash is a single instruction and a cell does not need to cache it.
+    static constexpr size_t initial_size_degree = 4;
+    using Cell = HashMapCell<UnderlyingType, CumulativeHistogramValue, Hasher>;
+    using Map = HashMapTable<
+        UnderlyingType,
+        Cell,
+        Hasher,
+        HashTableGrower<initial_size_degree>,
+        HashTableAllocatorWithStackMemory<(1ULL << initial_size_degree) * sizeof(Cell)>>;
     using Pair = typename Map::value_type;
 
     Map map;
@@ -42,6 +54,16 @@ struct QuantilePrometheusHistogram
 
     void merge(const QuantilePrometheusHistogram & rhs)
     {
+        /// Histograms wider than the inline table would otherwise grow through the whole
+        /// chain of heap rehashes; the size is known here, so allocate once. Bucket bounds
+        /// belong to the histogram, so merging two states of one series gives the same set of
+        /// keys rather than the sum of both - reserving for the sum would double the table for
+        /// nothing. Should the key sets differ after all, the table grows as it did before.
+        /// Reserve only when the input can outgrow this state's table: `resize` unconditionally
+        /// grows the buffer when asked for 0 elements, and a table already holding at least as
+        /// many keys cannot need to grow for a same-bounds merge.
+        if (rhs.map.size() > map.size() && rhs.map.size() > (1ULL << (initial_size_degree - 1)))
+            map.reserve(rhs.map.size());
         for (const auto & pair : rhs.map)
             map[pair.getKey()] += pair.getMapped();
     }
@@ -53,12 +75,9 @@ struct QuantilePrometheusHistogram
 
     void deserialize(ReadBuffer & buf)
     {
-        typename Map::Reader reader(buf);
-        while (reader.next())
-        {
-            const auto & pair = reader.get();
-            map[pair.first] = pair.second;
-        }
+        /// `read` sizes the table from the serialized element count before filling it, so a
+        /// histogram wider than the inline table costs one allocation instead of a chain of them.
+        map.read(buf);
     }
 
     /// Get the value of the `level` quantile. The level must be between 0 and 1.
