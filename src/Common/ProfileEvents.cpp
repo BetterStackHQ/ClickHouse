@@ -438,7 +438,7 @@
     M(MaterializedViewSelectPlanCacheHits, "Number of materialized view select plans taken from the plan cache instead of re-planning an inserted block.", ValueType::Number) \
     M(MaterializedViewSelectPlanCacheMisses, "Number of inserted blocks planned without a cached materialized view select plan (absent, stale, or uncacheable).", ValueType::Number) \
     M(MaterializedViewSelectPlanCacheRebuilds, "Number of cached materialized view select plans invalidated by a change of the view query, table metadata, UDF bodies, or row policies.", ValueType::Number) \
-    M(MaterializedViewSelectPlanCacheSkippedNonDeterministic, "Number of materialized view selects not cached because analysis would freeze session- or time-dependent constants, subqueries, or table locks into the plan.", ValueType::Number) \
+    M(MaterializedViewSelectPlanCacheSkippedNonDeterministic, "Number of materialized view selects not cached because analysis would freeze a non-deterministic value: session- or time-dependent constants, subqueries, or table locks in the select, or a target column default folded to a constant in the conversion to the target table.", ValueType::Number) \
     M(MaterializedViewSelectPlanCacheSkippedNonCloneable, "Number of materialized view selects not cached because a query plan step does not support cloning.", ValueType::Number) \
     M(MaterializedViewSelectPlanCacheSkippedForeignReads, "Number of materialized view selects not cached because the plan reads from something besides the view source.", ValueType::Number) \
     \

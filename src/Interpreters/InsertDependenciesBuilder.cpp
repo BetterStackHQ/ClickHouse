@@ -715,6 +715,21 @@ private:
 
         if (capture)
         {
+            /// The entry stores `conversion_actions`, which fill in the target columns the select
+            /// does not supply from their `DEFAULT` or `MATERIALIZED` expression. Building them
+            /// folds a call that returns a constant column even when the function is not
+            /// deterministic, so a default such as `now()` becomes the value this insert computed.
+            /// Every later insert served from the entry would then write that same value, with no
+            /// error and nothing to notice from the outside.
+            ///
+            /// A column the select does supply is taken from the block and never reaches its
+            /// default, so its expression is not in these actions and costs the view nothing.
+            if (capture->cacheable && hasNonDeterministicConstant(conversion_actions->getActionsDAG()))
+            {
+                ProfileEvents::increment(ProfileEvents::MaterializedViewSelectPlanCacheSkippedNonDeterministic);
+                capture->cacheable = false;
+                capture->plan = {};
+            }
             capture->conversion_actions = conversion_actions;
             plan_cache->put(
                 *cache_variant_key,
