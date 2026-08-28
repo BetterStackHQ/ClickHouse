@@ -837,7 +837,30 @@ private:
 
         *capture_out = tryCaptureSkeleton(plan, local_context);
         if (*capture_out)
+        {
             (*capture_out)->optimization_settings = optimization_settings;
+            /// The entry outlives this query, so it must not keep that query's state. The costly
+            /// field is the parallel replicas plan builder: the analyzer builds it for every
+            /// select, and it closes over a clone of the query, a copy of the context, and the
+            /// `StorageValues` standing in for the block being pushed.
+            ///
+            /// None of the three fields is read when a cached plan is turned into a pipeline.
+            /// `buildSelectPipelineFromCacheEntry` builds with `do_optimize = false`, which skips
+            /// `QueryPlan::optimize` and with it `addStepsToBuildSets`, the only reader of
+            /// `prepared_sets_cache`. `make_distributed_plan` is read after that check and does
+            /// reach `optimizeTreeSecondPass`, but the two readers there stop before the fields:
+            /// `considerEnablingParallelReplicas` returns unless `automatic_parallel_replicas_mode`
+            /// is set, which cannot be combined with `make_distributed_plan`, and
+            /// `convertLogicalJoinToPhysical`, which passes `initial_query_id` on, keeps joins
+            /// logical for a distributed plan.
+            ///
+            /// Should the hit path ever optimize the plan it clones, all three have to be rebuilt
+            /// from that query's context rather than dropped here: a builder left from the capture
+            /// would plan against that insert's block instead of this one's, silently.
+            (*capture_out)->optimization_settings->query_plan_with_parallel_replicas_builder = {};
+            (*capture_out)->optimization_settings->prepared_sets_cache = nullptr;
+            (*capture_out)->optimization_settings->initial_query_id = {};
+        }
 
         return std::move(*plan.buildQueryPipeline(optimization_settings, build_settings, /*do_optimize=*/ false));
     }
