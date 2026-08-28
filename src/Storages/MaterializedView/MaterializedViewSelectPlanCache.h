@@ -16,6 +16,7 @@
 namespace DB
 {
 
+class ActionsDAG;
 class ExpressionActions;
 using ExpressionActionsPtr = std::shared_ptr<ExpressionActions>;
 class IStorage;
@@ -116,5 +117,17 @@ struct SelectPlanCacheAnalysis
 };
 
 SelectPlanCacheAnalysis analyzeSelectForPlanCache(const ASTPtr & select_query, const ContextPtr & context);
+
+/// Whether building `actions` folded a call to a non-deterministic function into a constant.
+/// A call folds when executing it returns a constant column: a function that is constant within
+/// one query (`now`, `queryID`), or one that computes over constant arguments (`generateULID(1)`,
+/// `dictGet('d', 'a', 1)`). A call that returns a full column, `rand()` and
+/// `randomPrintableASCII(16)` among them, is not folded and is executed per block.
+///
+/// Used on the conversion of a view select's output to its target structure, which fills in the
+/// target columns the select does not supply from their `DEFAULT` or `MATERIALIZED` expression:
+/// a fold there is the capturing insert's own value, and an entry storing those actions would
+/// write it again for every later insert that hits the entry.
+bool hasNonDeterministicConstant(const ActionsDAG & actions);
 
 }

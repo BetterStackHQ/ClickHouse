@@ -4,6 +4,7 @@
 #include <Common/CurrentMetrics.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
+#include <Interpreters/ActionsDAG.h>
 #include <Common/ProfileEvents.h>
 #include <Common/SipHash.h>
 #include <Parsers/ASTCreateSQLFunctionQuery.h>
@@ -257,6 +258,21 @@ SelectPlanCacheAnalysis analyzeSelectForPlanCache(const ASTPtr & select_query, c
     analyzeImpl(select_query.get(), context, visited_udfs, result, udf_hash);
     result.udf_bodies_hash = udf_hash.get64();
     return result;
+}
+
+bool hasNonDeterministicConstant(const ActionsDAG & actions)
+{
+    for (const auto & node : actions.getNodes())
+    {
+        /// A folded call keeps its `function_base` and gains a constant `column`. When it had
+        /// arguments, `removeUnusedActions` then rewrites it into a `COLUMN` node and records
+        /// the volatility of the subtree it replaced in `is_deterministic_constant`.
+        /// `Node::isDeterministic` reads whichever of the two applies.
+        if (node.column && !node.isDeterministic())
+            return true;
+    }
+
+    return false;
 }
 
 }
