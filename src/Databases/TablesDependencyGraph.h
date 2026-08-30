@@ -175,7 +175,7 @@ private:
     mutable bool levels_calculated = false;
 
     const String name_for_logging;
-    mutable LoggerPtr logger = nullptr;
+    LoggerPtr logger;
 
     Node * findNode(const StorageID & table_id) const;
     Node * addOrUpdateNode(const StorageID & table_id);
