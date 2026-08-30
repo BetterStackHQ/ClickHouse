@@ -12,6 +12,8 @@
 #include <base/sort.h>
 #include <base/scope_guard.h>
 
+#include <limits>
+
 
 namespace DB
 {
@@ -21,6 +23,7 @@ namespace ErrorCodes
     extern const int ILLEGAL_COLUMN;
     extern const int LOGICAL_ERROR;
     extern const int INCORRECT_DATA;
+    extern const int PARAMETER_OUT_OF_BOUND;
 }
 
 void throwUnexpectedLowCardinalityIndexType(size_t size)
@@ -30,6 +33,22 @@ void throwUnexpectedLowCardinalityIndexType(size_t size)
 
 namespace
 {
+    /// Ranges no longer than this are translated element by element through the memo. The bulk path
+    /// below pays a fixed cost per call - deduplicating the source indexes through a hash map,
+    /// materializing the distinct keys and rebuilding an index column - which only a longer range
+    /// amortizes, and it probes the destination dictionary either way.
+    constexpr size_t SMALL_RANGE_MAX = 32;
+
+    /// A source dictionary position whose translation is not known yet.
+    constexpr UInt64 UNTRANSLATED = std::numeric_limits<UInt64>::max();
+
+    /// Bounds on the memo, per column: at most this many source dictionaries, and at most this many
+    /// bytes of translations in total. A source dictionary that does not fit is not memoized, and
+    /// ranges from it take the bulk path - which is also the better choice for a dictionary that
+    /// large, because most of its positions would be translated at most once.
+    constexpr size_t MAX_TRANSLATIONS = 16;
+    constexpr size_t MAX_TRANSLATION_BYTES = 256 * 1024;
+
     void checkColumn(const IColumn & column)
     {
         if (!dynamic_cast<const IColumnUnique *>(&column))
@@ -194,6 +213,86 @@ void ColumnLowCardinality::insertFromFullColumn(const IColumn & src, size_t n)
     idx.insertIndex(getDictionary().uniqueInsertFrom(src, n));
 }
 
+ColumnLowCardinality::DictionaryTranslation * ColumnLowCardinality::findOrInstallTranslation(const ColumnLowCardinality & src)
+{
+    /// The bulk path maps a source value that *compares* equal to the destination's default onto the
+    /// default position (`ColumnUnique::uniqueInsertRangeImpl`), while `uniqueInsertFrom` compares
+    /// the raw bytes (`ColumnUnique::uniqueInsertData`). Those two tests agree for every type except
+    /// floating-point ones, where negative zero compares equal to the default and differs from it
+    /// byte for byte. Leaving float dictionaries on the bulk path keeps this branch a pure
+    /// memoization. This is the same test, for a related reason, that `getEqualRangeEndAssumeSorted`
+    /// below uses to keep floating-point dictionaries off its index-based fast path.
+    if (WhichDataType(src.getDictionary().getNestedNotNullableColumn()->getDataType()).isFloat())
+        return nullptr;
+
+    /// A nullable source dictionary against a non-nullable destination one, which
+    /// `cloneWithDefaultOnNull` produces. The two paths part company on a NULL element:
+    /// `uniqueInsertRangeFrom` reads the source's null map and asks for `getNullValueIndex()`,
+    /// which a non-nullable dictionary rejects, while `uniqueInsertFrom` tests the destination's
+    /// own flag, unwraps the `ColumnNullable` and inserts the value underneath. Leave the pair on
+    /// the bulk path, where its behaviour is whatever it is today.
+    if (src.nestedIsNullable() && !nestedIsNullable())
+        return nullptr;
+
+    const ColumnPtr & source = src.getDictionaryPtr();
+    const IColumnUnique * target = &getDictionary();
+    const size_t source_size = src.getDictionary().size();
+    const size_t entry_bytes = source_size * sizeof(UInt64);
+
+    if (entry_bytes > MAX_TRANSLATION_BYTES)
+        return nullptr;
+
+    if (!translations)
+    {
+        translations = std::make_unique<std::vector<DictionaryTranslation>>();
+        translations->reserve(MAX_TRANSLATIONS);
+    }
+
+    DictionaryTranslation * stale = nullptr;
+    for (auto & translation : *translations)
+    {
+        if (translation.source.get() != source.get())
+            continue;
+        if (translation.target == target && translation.positions.size() == source_size)
+            return &translation;
+        /// A different destination dictionary, or a source dictionary of a different size, makes
+        /// the memoized positions meaningless. The entry is refilled below rather than dropped,
+        /// because its slot is accounted for either way.
+        stale = &translation;
+        break;
+    }
+
+    /// The entry being installed or refilled is excluded, so that a source dictionary which grew
+    /// under an existing entry cannot push the total past the budget: such a refill is refused and
+    /// the entry keeps its old, in-budget allocation.
+    size_t other_bytes = 0;
+    for (const auto & translation : *translations)
+        if (&translation != stale)
+            other_bytes += translation.positions.size() * sizeof(UInt64);
+
+    if (other_bytes + entry_bytes > MAX_TRANSLATION_BYTES)
+        return nullptr;
+
+    if (stale)
+    {
+        stale->target = target;
+        stale->positions.assign(source_size, UNTRANSLATED);
+        return stale;
+    }
+
+    /// At the bounds the memo stops growing instead of evicting: a merge of more parts than there
+    /// are entries interleaves its sources, so an evicting memo would refill an entry per call and
+    /// never serve a hit. Ranges from the remaining source dictionaries take the bulk path.
+    if (translations->size() >= MAX_TRANSLATIONS)
+        return nullptr;
+
+    DictionaryTranslation & installed = translations->emplace_back();
+    installed.source = source;
+    installed.target = target;
+    installed.positions.assign(source_size, UNTRANSLATED);
+    return &installed;
+}
+
 #if !defined(DEBUG_OR_SANITIZER_BUILD)
 void ColumnLowCardinality::insertRangeFrom(const IColumn & src, size_t start, size_t length)
 #else
@@ -205,6 +304,13 @@ void ColumnLowCardinality::doInsertRangeFrom(const IColumn & src, size_t start, 
     if (!low_cardinality_src)
         throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Expected ColumnLowCardinality, got {}", src.getName());
 
+    const size_t src_size = low_cardinality_src->size();
+    if (start > src_size || length > src_size - start)
+        throw Exception(ErrorCodes::PARAMETER_OUT_OF_BOUND,
+                        "Parameters start = {}, length = {} are out of bound in "
+                        "ColumnLowCardinality::insertRangeFrom method (source size = {})",
+                        start, length, src_size);
+
     if (&low_cardinality_src->getDictionary() == &getDictionary())
     {
         /// Dictionary is shared with src column. Insert only indexes.
@@ -213,6 +319,39 @@ void ColumnLowCardinality::doInsertRangeFrom(const IColumn & src, size_t start, 
     else
     {
         compactIfSharedDictionary();
+
+        /// Placed after `compactIfSharedDictionary`, so that an empty range keeps that side effect
+        /// and only skips the translation, which has nothing to translate.
+        if (length == 0)
+            return;
+
+        /// A row-at-a-time insert of an Array, Map or Tuple of LowCardinality arrives here with a
+        /// range of a few elements, through `ColumnArray::insertFrom`. Translating those elements
+        /// one by one through the memo skips the bulk path's per-call cost entirely, and replaces
+        /// its dictionary probes with an array lookup. Both paths insert the distinct source keys
+        /// in order of first appearance, so the destination dictionary comes out the same.
+        if (length <= SMALL_RANGE_MAX)
+        {
+            if (DictionaryTranslation * translation = findOrInstallTranslation(*low_cardinality_src))
+            {
+                const IColumn & src_nested = *low_cardinality_src->getDictionary().getNestedColumn();
+                /// Appending to the destination dictionary never replaces the object it lives in, so
+                /// the reference stays valid across the inserts below.
+                IColumnUnique & dst_dictionary = getDictionary();
+
+                for (size_t i = 0; i < length; ++i)
+                {
+                    const size_t position = low_cardinality_src->getIndexAt(start + i);
+                    chassert(position < translation->positions.size());
+                    UInt64 & translated = translation->positions[position];
+                    if (translated == UNTRANSLATED)
+                        translated = dst_dictionary.uniqueInsertFrom(src_nested, position);
+                    idx.insertIndex(translated);
+                }
+
+                return;
+            }
+        }
 
         /// TODO: Support native insertion from other unique column. It will help to avoid null map creation.
 
@@ -615,6 +754,7 @@ void ColumnLowCardinality::setSharedDictionary(const ColumnPtr & column_unique)
                         "ColumnLowCardinality because is't not empty.");
 
     dictionary.setShared(column_unique);
+    translations.reset();
 }
 
 ColumnLowCardinality::MutablePtr ColumnLowCardinality::cutAndCompact(size_t start, size_t length) const
@@ -629,6 +769,7 @@ void ColumnLowCardinality::compactInplace()
     auto indexes = idx.detachIndexes();
     dictionary.compact(indexes);
     idx.attachIndexes(std::move(indexes));
+    translations.reset();
 }
 
 void ColumnLowCardinality::compactInplaceToNullable()
@@ -636,6 +777,7 @@ void ColumnLowCardinality::compactInplaceToNullable()
     auto indexes = idx.detachIndexes();
     dictionary.compactToNullable(indexes);
     idx.attachIndexes(std::move(indexes));
+    translations.reset();
 }
 
 void ColumnLowCardinality::compactIfSharedDictionary()

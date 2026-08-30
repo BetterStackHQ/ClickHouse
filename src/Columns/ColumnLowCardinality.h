@@ -8,6 +8,9 @@
 #include <Common/assert_cast.h>
 #include <Common/typeid_cast.h>
 
+#include <memory>
+#include <vector>
+
 
 namespace DB
 {
@@ -28,7 +31,14 @@ class ColumnLowCardinality final : public COWHelper<IColumnHelper<ColumnLowCardi
     friend class COWHelper<IColumnHelper<ColumnLowCardinality>, ColumnLowCardinality>;
 
     ColumnLowCardinality(MutableColumnPtr && column_unique, MutableColumnPtr && indexes, bool is_shared);
-    ColumnLowCardinality(const ColumnLowCardinality & other) = default;
+    /// Written out rather than defaulted: `translations` describes this column's own dictionary
+    /// object and must not be inherited by a clone (and `PaddedPODArray` is not copyable).
+    ColumnLowCardinality(const ColumnLowCardinality & other)
+        : COWHelper<IColumnHelper<ColumnLowCardinality>, ColumnLowCardinality>(other)
+        , dictionary(other.dictionary)
+        , idx(other.idx)
+    {
+    }
 
 public:
     /** Create immutable column using immutable arguments. This arguments may be shared with other columns.
@@ -207,6 +217,10 @@ public:
 
     void forEachMutableSubcolumn(MutableColumnCallback callback) override
     {
+        /// The callback may replace the dictionary outright, which invalidates every memoized
+        /// translation into it.
+        translations.reset();
+
         callback(idx.getIndexesPtr());
 
         /// Column doesn't own dictionary if it's shared.
@@ -236,6 +250,9 @@ public:
 
     void forEachMutableSubcolumnRecursively(RecursiveMutableColumnCallback callback) override
     {
+        /// As above: the callback is free to mutate or replace the dictionary.
+        translations.reset();
+
         callback(*idx.getIndexesPtr());
         idx.getIndexesPtr()->forEachMutableSubcolumnRecursively(callback);
 
@@ -287,8 +304,10 @@ public:
     /// covers just that range; otherwise it must cover the whole column.
     void applyNegatedNullMap(const NullMap & map, size_t offset = 0);
     bool nestedCanBeInsideNullable() const { return dictionary.getColumnUnique().getNestedColumn()->canBeInsideNullable(); }
-    void nestedToNullable() { dictionary.getColumnUnique().nestedToNullable(); }
-    void nestedRemoveNullable() { dictionary.getColumnUnique().nestedRemoveNullable(); }
+    /// Both flip the dictionary's nullability, which changes what `uniqueInsertFrom` returns for a
+    /// NULL source value, so memoized translations into it are no longer valid.
+    void nestedToNullable() { dictionary.getColumnUnique().nestedToNullable(); translations.reset(); }
+    void nestedRemoveNullable() { dictionary.getColumnUnique().nestedRemoveNullable(); translations.reset(); }
     MutableColumnPtr cloneNullable() const;
 
     /// Promote a non-nullable dictionary to `Nullable(T)` in place, rebuilding it with a NULL placeholder
@@ -381,8 +400,28 @@ private:
         bool shared = false;
     };
 
+    /// Memoized translation of one source dictionary's positions into this column's dictionary.
+    /// `uniqueInsertFrom(source_nested, position)` is a pure function of `position` as long as the
+    /// source value at `position` does not change and the destination dictionary is only appended
+    /// to; appends never renumber, and every operation that does replace the destination dictionary
+    /// resets the memo. `source` is held so that the address of a released source dictionary cannot
+    /// be reused by a different one while an entry refers to it - the idiom of `dictionary_holder`
+    /// in `ColumnsHashing.h`.
+    struct DictionaryTranslation
+    {
+        ColumnPtr source;
+        const IColumnUnique * target = nullptr;
+        PaddedPODArray<UInt64> positions;
+    };
+
     Dictionary dictionary;
     ColumnIndex idx;
+    /// Allocated on the first short cross-dictionary range insert; stays null otherwise.
+    std::unique_ptr<std::vector<DictionaryTranslation>> translations;
+
+    /// The entry translating `src`'s dictionary into this column's dictionary, or nullptr when the
+    /// source dictionary does not fit within the memo's bounds.
+    DictionaryTranslation * findOrInstallTranslation(const ColumnLowCardinality & src);
 
     void compactInplace();
     void compactInplaceToNullable();
