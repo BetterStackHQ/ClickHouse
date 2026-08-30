@@ -1,0 +1,20 @@
+parts before	1
+parts after	1
+rows	1908	282107	3810	1857
+distinct	590	1558	4	13	456	18	31
+fold	3342601319979719843
+map lengths	[0,1,2,3,31,32,33,1000]
+empty maps	121	382	263
+boundary	31	256	256
+boundary	32	256	256
+boundary	33	256	256
+idempotent	1908	1552200410811708840
+overflow	1024	1024	3072
+float	1	[0,0,1.5]	['inf','inf','0.6666666666666666']
+float	2	[0,-1.5]	['inf','-0.6666666666666666']
+float	3	[0,2.5]	['inf','0.4']
+float	4	[0,0]	['inf','inf']
+float nullable	1	[0,0,NULL,1.5]	['inf','inf',NULL,'0.6666666666666666']
+float nullable	2	[NULL,0,-1.5]	[NULL,'inf','-0.6666666666666666']
+float nullable	3	[0,NULL,2.5]	['inf',NULL,'0.4']
+float nullable	4	[0,0,NULL]	['inf','inf',NULL]

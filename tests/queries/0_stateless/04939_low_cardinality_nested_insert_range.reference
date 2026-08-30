@@ -1,0 +1,6 @@
+copy	1000	2000	1500	521	297	7
+copy identical	0
+array join	1500	9
+group by	844	521	297	1000
+join	1000	2000	297
+limit by	24	20

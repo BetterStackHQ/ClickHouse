@@ -3,10 +3,16 @@
 
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeLowCardinality.h>
+#include <Common/Exception.h>
 
 #include <gtest/gtest.h>
 
 using namespace DB;
+
+namespace DB::ErrorCodes
+{
+    extern const int PARAMETER_OUT_OF_BOUND;
+}
 
 template <typename T>
 void testLowCardinalityNumberInsert(const DataTypePtr & data_type)
@@ -110,4 +116,51 @@ TEST(ColumnLowCardinality, EmptyDictionaryEmptyIndexes)
     ASSERT_NO_THROW(lc_column.insertRangeFromDictionaryEncodedColumn(*empty_keys, *empty_indexes));
     
     ASSERT_EQ(column->size(), 0);
+}
+
+namespace
+{
+    void assertOutOfBound(IColumn & destination, const IColumn & source, size_t start, size_t length)
+    {
+        try
+        {
+            destination.insertRangeFrom(source, start, length);
+        }
+        catch (const Exception & e)
+        {
+            ASSERT_EQ(e.code(), ErrorCodes::PARAMETER_OUT_OF_BOUND);
+            return;
+        }
+        FAIL() << "insertRangeFrom(" << start << ", " << length << ") was expected to throw";
+    }
+}
+
+TEST(ColumnLowCardinality, InsertRangeFromOutOfBound)
+{
+    auto low_cardinality_type = std::make_shared<DataTypeLowCardinality>(std::make_shared<DataTypeUInt64>());
+
+    auto source = low_cardinality_type->createColumn();
+    source->insert(static_cast<UInt64>(1));
+    source->insert(static_cast<UInt64>(2));
+    source->insert(static_cast<UInt64>(3));
+
+    auto destination = low_cardinality_type->createColumn();
+
+    /// A range running past the end of the source has to be reported rather than read out of
+    /// bounds, on both branches: short ranges are translated element by element through the memo,
+    /// longer ones go through the bulk path, and a source sharing the destination's dictionary
+    /// takes neither.
+    assertOutOfBound(*destination, *source, 0, 4);
+    assertOutOfBound(*destination, *source, 3, 1);
+    assertOutOfBound(*destination, *source, 4, 0);
+    assertOutOfBound(*destination, *source, 1, 3);
+    assertOutOfBound(*destination, *source, 0, 1024);
+    assertOutOfBound(*source, *source, 0, 4);
+    ASSERT_EQ(destination->size(), 0);
+
+    /// The ranges that do fit, including the empty one at the end.
+    ASSERT_NO_THROW(destination->insertRangeFrom(*source, 1, 2));
+    ASSERT_NO_THROW(destination->insertRangeFrom(*source, 3, 0));
+    ASSERT_NO_THROW(destination->insertRangeFrom(*source, 0, 3));
+    ASSERT_EQ(destination->size(), 5);
 }
