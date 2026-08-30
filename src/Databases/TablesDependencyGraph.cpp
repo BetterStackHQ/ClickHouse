@@ -1,4 +1,5 @@
 #include <Databases/TablesDependencyGraph.h>
+#include <Common/CurrentThreadHelpers.h>
 #include <Common/logger_useful.h>
 #include <IO/WriteHelpers.h>
 #include <boost/range/adaptor/reversed.hpp>
@@ -23,6 +24,7 @@ namespace
 
 TablesDependencyGraph::TablesDependencyGraph(const String & name_for_logging_)
     : name_for_logging(name_for_logging_)
+    , logger(::getLogger(name_for_logging_))
 {
 }
 
@@ -737,6 +739,15 @@ std::vector<std::vector<StorageID>> TablesDependencyGraph::getTablesSplitByDepen
 
 void TablesDependencyGraph::log() const
 {
+    /// Describing every node calculates the levels of the whole graph and allocates a couple of strings
+    /// per node, and one of its callers holds the DatabaseCatalog lock. Skip it if nothing reads it.
+    /// The condition is the one LOG_IMPL uses: a message is written either when the logger's own level
+    /// allows it or when the query being executed asked for logs of this level.
+    chassert(logger);
+    const bool is_clients_log = DB::currentThreadHasGroup() && DB::currentThreadLogsLevel() >= LogsLevel::trace;
+    if (!is_clients_log && !logger->is(Poco::Message::PRIO_TRACE))
+        return;
+
     if (nodes.empty())
     {
         LOG_TRACE(getLogger(), "No tables");
@@ -758,8 +769,6 @@ void TablesDependencyGraph::log() const
 
 LoggerPtr TablesDependencyGraph::getLogger() const
 {
-    if (!logger)
-        logger = ::getLogger(name_for_logging);
     return logger;
 }
 
