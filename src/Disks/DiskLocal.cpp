@@ -416,6 +416,32 @@ void DiskLocal::prepareRead(
     std::optional<size_t> read_hint,
     ReadPipeline & pipeline) const
 {
+    prepareReadImpl(path, settings, read_hint, pipeline, /* known_size = */ {});
+}
+
+std::unique_ptr<ReadBufferFromFileBase> DiskLocal::openFileIfExists(
+    const String & path,
+    const ReadSettings & settings,
+    std::optional<size_t> read_hint) const
+{
+    /// `IDisk::readFileIfExists` probes with `existsFile` and then lets `prepareRead` stat the
+    /// file again for its size. One `stat` answers both, so ask it once and pass the size on.
+    auto entry = getFileTypeAndSizeIfExists(path);
+    if (!entry || entry->is_directory)
+        return {};
+
+    ReadPipeline pipeline;
+    prepareReadImpl(path, settings, read_hint, pipeline, entry->size);
+    return pipeline.build();
+}
+
+void DiskLocal::prepareReadImpl(
+    const String & path,
+    const ReadSettings & settings,
+    std::optional<size_t> read_hint,
+    ReadPipeline & pipeline,
+    std::optional<UInt64> known_size) const
+{
     auto full_path = fs::path(disk_path) / path;
 
     /// Do not fail eagerly if the file doesn't exist or can't be stat'd.
@@ -424,7 +450,9 @@ void DiskLocal::prepareRead(
     /// that case so the reader opens the file rather than treating a zero size as
     /// an empty file.
     std::error_code ec;
-    auto file_size = fs::file_size(full_path, ec);
+    auto file_size = known_size.value_or(0);
+    if (!known_size)
+        file_size = fs::file_size(full_path, ec);
 
     StoredObject obj(full_path.string(), full_path.string(), ec ? StoredObject::UnknownSize : file_size);
 
