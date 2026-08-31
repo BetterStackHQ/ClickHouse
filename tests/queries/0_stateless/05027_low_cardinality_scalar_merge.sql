@@ -43,6 +43,8 @@ DROP TABLE t_lc_scalar;
 
 -- More source parts than the memo holds entries for. Past its bound the memo stops installing
 -- entries, so the same merge translates some sources through it and the rest without it.
+-- This is the >16-entries latch case, and the only coverage of it: keep the part count above the
+-- memo's entry bound if this section is ever rewritten.
 DROP TABLE IF EXISTS t_lc_scalar_many;
 
 CREATE TABLE t_lc_scalar_many

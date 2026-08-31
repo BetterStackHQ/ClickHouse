@@ -1,0 +1,8 @@
+right parts	1
+joined rows	240
+join diff	0	0
+null vs empty	240	22	31	187
+head	0	NULL	t0
+head	1	[n0]	t3
+head	2	[n0]	t1
+head	3	[n0]	t4
