@@ -180,6 +180,20 @@ public:
     /// Return size of the specified file.
     virtual size_t getFileSize(const String & path) const = 0;
 
+    /// Type and size of the entry at `path`, resolved in one metadata lookup where the disk can
+    /// do so. `nullopt` means the entry is neither a regular file nor a directory - exactly what
+    /// `existsFile` and `existsDirectory` both returning `false` means. `size` is meaningful only
+    /// when `is_directory` is `false`. Failures that `existsFile` reports by throwing (EACCES,
+    /// EIO, ...) must keep throwing here; only "not there" turns into `nullopt`.
+    /// The default composes the three separate probes, so a disk that does not override it keeps
+    /// its current behaviour and cost.
+    struct FileTypeAndSize
+    {
+        bool is_directory = false;
+        UInt64 size = 0;
+    };
+    virtual std::optional<FileTypeAndSize> getFileTypeAndSizeIfExists(const String & path) const;
+
     /// Create directory.
     virtual void createDirectory(const String & path) = 0;
 

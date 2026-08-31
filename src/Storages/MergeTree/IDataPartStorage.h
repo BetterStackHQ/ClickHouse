@@ -134,6 +134,27 @@ public:
     virtual std::optional<UInt64> getPackedFileUncompressedSize(const std::string & /*file_name*/) const { return {}; }
     virtual UInt32 getRefCount(const std::string & file_name) const = 0;
 
+    /// Type and size of an entry inside the part directory, resolved in one metadata lookup where
+    /// the storage can do so. `nullopt` means the name is neither a regular file nor a directory -
+    /// exactly what `existsFile` and `existsDirectory` both returning `false` means. `size` is
+    /// meaningful only when `is_directory` is `false`. Errors other than "not there" propagate,
+    /// as they do from `existsFile`.
+    /// The default composes the three separate probes, so a storage that does not override it
+    /// keeps its current behaviour and cost.
+    struct FileTypeAndSize
+    {
+        bool is_directory = false;
+        UInt64 size = 0;
+    };
+    virtual std::optional<FileTypeAndSize> getFileTypeAndSizeIfExists(const std::string & name) const
+    {
+        if (existsDirectory(name))
+            return FileTypeAndSize{.is_directory = true, .size = 0};
+        if (existsFile(name))
+            return FileTypeAndSize{.is_directory = false, .size = getFileSize(name)};
+        return {};
+    }
+
     /// Get path on remote filesystem from file name on local filesystem.
     virtual std::vector<std::string> getRemotePaths(const std::string & file_name) const = 0;
 

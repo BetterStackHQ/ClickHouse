@@ -2655,8 +2655,12 @@ void IMergeTreeDataPart::checkConsistencyBase() const
     {
         auto check_file_not_empty = [this](const String & file_path)
         {
-            UInt64 file_size = 0;
-            if (!getDataPartStorage().existsFile(file_path) || (file_size = getDataPartStorage().getFileSize(file_path)) == 0)
+            /// A single lookup for both "is it there" and "how big is it", as in `checkSize`.
+            /// A directory has no size here, so it fails the check exactly as it does today,
+            /// where `existsFile` returns false for it.
+            auto entry = getDataPartStorage().getFileTypeAndSizeIfExists(file_path);
+            UInt64 file_size = entry && !entry->is_directory ? entry->size : 0;
+            if (file_size == 0)
                 throw Exception(
                     ErrorCodes::BAD_SIZE_OF_FILE_IN_DATA_PART,
                     "Part {} is broken: {} is empty",

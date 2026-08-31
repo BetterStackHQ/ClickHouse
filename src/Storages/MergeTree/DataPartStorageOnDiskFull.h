@@ -62,6 +62,7 @@ private:
 
     bool existsFileImpl(const std::string & name) const override;
     size_t getFileSizeImpl(const std::string & file_name) const override;
+    std::optional<FileTypeAndSize> getFileTypeAndSizeIfExistsImpl(const std::string & name) const override;
     void prepareReadImpl(
         const std::string & name,
         const ReadSettings & settings,

@@ -1,0 +1,14 @@
+1. a file listed in checksums.txt is missing
+FILE_DOESNT_EXIST
+2. a file listed in checksums.txt has the wrong size
+BAD_SIZE_OF_FILE_IN_DATA_PART
+3. a projection directory listed in checksums.txt is skipped, the part still loads
+rows: 100
+broken: 0
+4. an optional per-part file, present and absent
+ttl.txt present: 1
+uuid.txt present: 0
+rows: 100
+5. a torn data file detaches the part as broken on load
+active: 0
+broken: 1
