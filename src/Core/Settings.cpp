@@ -683,6 +683,11 @@ When reading an object from S3 (or an S3-compatible store such as GCS), check th
     DECLARE(Bool, azure_validate_etag_on_read, true, R"(
 When reading a blob from Azure Blob Storage through the `azureBlobStorage` / `azureBlobStorageCluster` table functions or the `AzureBlobStorage` table engine, pin every `GET` request to the generation of the blob that was observed when it was listed by sending its `ETag` in `If-Match`, and check the `ETag` of the response. A single file read issues many ranged `GET` requests; if the blob is overwritten in place between them (for example by an external writer rewriting a fixed key), the reads can otherwise be stitched together from two different generations of the blob and surface as a corrupted checksum or parse error. The size recorded at listing time is also used as the right bound of the read, so it is only correct for the generation it was recorded for. When a mismatch is detected the read fails with `AZURE_OBJECT_CHANGED_DURING_READ` instead of returning inconsistent data. Disable only for workloads that intentionally read blobs that are being overwritten and can tolerate inconsistent reads.
 )", 0) \
+    DECLARE(Bool, use_object_metadata_cache, false, R"(
+Cache the object metadata (size, ETag, last modification time) that object storage table engines and table functions (`s3`, `azure`, `hdfs`, ...) fetch before reading an object, so repeated reads of the same objects do not issue a metadata (`HEAD`) request per query.
+
+Enable only when the objects read this way are immutable (never overwritten in place): cached entries are not revalidated. If an object is overwritten anyway, reads fail with an error instead of returning inconsistent data (see `s3_validate_etag_on_read`) and the entry is invalidated, so the next query observes the new object. The absence of an object is never cached. The cache is bounded by the `object_metadata_cache_max_entries` server configuration parameter (default 100000).
+)", 0) \
     DECLARE(Bool, azure_check_objects_after_upload, false, R"(
 Check each uploaded object in azure blob storage to be sure that upload was successful
 )", 0) \

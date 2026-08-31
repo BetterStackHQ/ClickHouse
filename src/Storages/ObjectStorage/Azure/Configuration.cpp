@@ -38,6 +38,7 @@ namespace Setting
     extern const SettingsBool azure_truncate_on_insert;
     extern const SettingsSchemaInferenceMode schema_inference_mode;
     extern const SettingsBool schema_inference_use_cache_for_azure;
+    extern const SettingsBool use_object_metadata_cache;
 }
 
 namespace ErrorCodes
@@ -86,6 +87,7 @@ StorageObjectStorageQuerySettings StorageAzureConfiguration::getQuerySettings(co
         .list_object_keys_size = settings[Setting::azure_list_object_keys_size],
         .throw_on_zero_files_match = settings[Setting::azure_throw_on_zero_files_match],
         .ignore_non_existent_file = settings[Setting::azure_ignore_file_doesnt_exist],
+        .use_object_metadata_cache = settings[Setting::use_object_metadata_cache],
     };
 }
 
