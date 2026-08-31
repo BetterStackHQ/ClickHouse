@@ -81,6 +81,9 @@ protected:
     const std::optional<FormatSettings> format_settings;
     const UInt64 max_block_size;
     const bool need_only_count;
+    /// Whether reads of this source may serve object metadata from the object metadata cache, and
+    /// therefore have to drop the entry of an object whose read failed.
+    const bool object_metadata_cache_enabled;
     FormatParserSharedResourcesPtr parser_shared_resources;
     FormatFilterInfoPtr format_filter_info;
 
@@ -254,6 +257,7 @@ public:
         bool ignore_non_existent_files_,
         bool skip_object_metadata_,
         bool with_tags_,
+        String metadata_cache_key_prefix_ = {},
         std::function<void(FileProgress)> file_progress_callback = {});
 
     ~KeysIterator() override = default;
@@ -271,6 +275,9 @@ private:
     const bool ignore_non_existent_files;
     const bool skip_object_metadata;
     const bool with_tags;
+    /// Non-empty when the object metadata cache is enabled for this read; combined with each key
+    /// to form the cache key. Tags are mutable, so a tags-requesting iterator keeps it empty.
+    const String metadata_cache_key_prefix;
 };
 
 /*

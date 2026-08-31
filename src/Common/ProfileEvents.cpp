@@ -1037,6 +1037,10 @@ The server successfully detected this situation and will download merged part fr
     M(SchemaInferenceCacheEvictions, "Number of times a schema from cache was evicted due to overflow", ValueType::Number) \
     M(SchemaInferenceCacheInvalidations, "Number of times a schema in cache became invalid due to changes in data", ValueType::Number) \
     \
+    M(ObjectMetadataCacheHits, "Number of times object storage metadata was served from the object metadata cache instead of a metadata request", ValueType::Number) \
+    M(ObjectMetadataCacheMisses, "Number of times object storage metadata was not found in the object metadata cache and a metadata request was issued", ValueType::Number) \
+    M(ObjectMetadataCacheInvalidations, "Number of times an object metadata cache entry was invalidated after a read error on the object", ValueType::Number) \
+    \
     M(KeeperPacketsSent, "Packets sent by keeper server", ValueType::Number) \
     M(KeeperPacketsReceived, "Packets received by keeper server", ValueType::Number) \
     M(KeeperRequestTotal, "Total requests number on keeper server", ValueType::Number) \

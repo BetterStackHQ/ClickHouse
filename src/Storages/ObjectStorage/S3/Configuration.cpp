@@ -44,6 +44,7 @@ namespace Setting
     extern const SettingsBool s3_validate_request_settings;
     extern const SettingsSchemaInferenceMode schema_inference_mode;
     extern const SettingsBool schema_inference_use_cache_for_s3;
+    extern const SettingsBool use_object_metadata_cache;
     extern const SettingsBool compatibility_s3_presigned_url_query_in_path;
     extern const SettingsS3UriStyle s3_uri_style;
 }
@@ -160,6 +161,7 @@ StorageObjectStorageQuerySettings StorageS3Configuration::getQuerySettings(const
         .list_object_keys_size = settings[Setting::s3_list_object_keys_size],
         .throw_on_zero_files_match = settings[Setting::s3_throw_on_zero_files_match],
         .ignore_non_existent_file = settings[Setting::s3_ignore_file_doesnt_exist],
+        .use_object_metadata_cache = settings[Setting::use_object_metadata_cache],
     };
 }
 
