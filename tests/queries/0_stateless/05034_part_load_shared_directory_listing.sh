@@ -51,6 +51,21 @@ ${CLICKHOUSE_CLIENT} --query "
     SELECT count() FROM system.mutations
     WHERE database = currentDatabase() AND table = 't_listing' AND command LIKE '%v = 1%'"
 
+# `loadMutations` is the only writer of this line, so it says that the entries came out of the
+# shared listing and reached it, rather than the mutation appearing in `system.mutations` by some
+# other route.
+${CLICKHOUSE_CLIENT} --query "SYSTEM FLUSH LOGS text_log"
+echo -n "mutation entry read by the mutation loader: "
+${CLICKHOUSE_CLIENT} --query "
+    SELECT count() > 0 FROM system.text_log
+    WHERE event_date >= yesterday() AND event_time >= now() - 600
+      AND logger_name LIKE '${CLICKHOUSE_DATABASE}.t_listing%'
+      AND message LIKE 'Loading mutation: mutation\_%'
+    SETTINGS max_rows_to_read = 0"
+
+# Only `loadMutations` can account for this one: the entry is a regular file, and the temporary
+# directory cleanup that also matches the `tmp_` prefix removes directories only - `isOldPartDirectory`
+# answers `false` for anything that is not one.
 echo -n "tmp_mutation_ entry removed: "
 if [ -e "${TABLE_PATH}tmp_mutation_9999999999.txt" ]; then echo 0; else echo 1; fi
 

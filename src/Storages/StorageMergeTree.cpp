@@ -1538,9 +1538,8 @@ void StorageMergeTree::loadMutations()
 
                 incrementMutationsCounters(mutation_counters, *entry_it->second.commands);
             }
-            else
+            else if (startsWith(entry_name, "tmp_mutation_"))
             {
-                chassert(startsWith(entry_name, "tmp_mutation_"));
                 disk->removeFile(entry_path);
             }
         }
