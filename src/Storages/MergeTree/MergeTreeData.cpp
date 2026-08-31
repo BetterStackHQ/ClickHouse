@@ -122,6 +122,7 @@
 #include <Storages/MergeTree/MergeTreeSelectProcessor.h>
 #include <Storages/MergeTree/MergeTreeSettings.h>
 #include <Storages/MergeTree/MergeTreeVirtualColumns.h>
+#include <Storages/MergeTree/PartColumnsParseMemo.h>
 #include <Storages/MergeTree/PatchParts/PatchPartsUtils.h>
 #include <Storages/MergeTree/PrimaryIndexCache.h>
 #include <Storages/MergeTree/RangesInDataPart.h>
@@ -2772,7 +2773,8 @@ std::vector<MergeTreeData::LoadPartResult> MergeTreeData::loadDataPartsFromDisk(
 
     /// Parts of one table share a schema, so parse each distinct `columns.txt` once for the whole
     /// batch. Released with this call: it accelerates the load and keeps nothing afterwards.
-    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>();
+    auto columns_parse_memo
+        = std::make_shared<PartColumnsParseMemo>(StorageMetadataPtr(getInMemoryMetadataPtr(getContext(), false)));
 
     ThreadPoolCallbackRunnerLocal<void> runner(getActivePartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_ACTIVE_PARTS);
     while (true)
@@ -3547,10 +3549,11 @@ try
 
     auto blocker = CannotAllocateThreadFaultInjector::blockFaultInjections();
 
-    ThreadPoolCallbackRunnerLocal<void> runner(getOutdatedPartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_OUTDATED_PARTS);
-
     /// As in `loadDataPartsFromDisk`: one parse of each distinct `columns.txt` for the batch.
-    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>();
+    auto columns_parse_memo
+        = std::make_shared<PartColumnsParseMemo>(StorageMetadataPtr(getInMemoryMetadataPtr(getContext(), false)));
+
+    ThreadPoolCallbackRunnerLocal<void> runner(getOutdatedPartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_OUTDATED_PARTS);
 
     bool replicated = dynamic_cast<StorageReplicatedMergeTree *>(this) != nullptr;
     while (true)
