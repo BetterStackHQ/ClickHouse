@@ -3,23 +3,38 @@
 #include <Access/AccessEntityIO.h>
 #include <Access/AccessChangesNotifier.h>
 #include <Access/MemoryAccessStorage.h>
+#include <Core/ServerSettings.h>
 #include <IO/WriteHelpers.h>
 #include <IO/ReadHelpers.h>
 #include <IO/ReadBufferFromFile.h>
 #include <IO/WriteBufferFromFile.h>
 #include <Interpreters/Access/InterpreterCreateUserQuery.h>
 #include <Interpreters/Access/InterpreterShowGrantsQuery.h>
+#include <Interpreters/Context.h>
+#include <Common/CurrentMetrics.h>
+#include <Common/getNumberOfCPUCoresToUse.h>
 #include <Common/logger_useful.h>
+#include <Common/setThreadName.h>
+#include <Common/threadPoolCallbackRunner.h>
 #include <Common/ThreadPool.h>
 #include <Poco/JSON/JSON.h>
 #include <Poco/JSON/Object.h>
 #include <Poco/JSON/Stringifier.h>
 #include <boost/range/adaptor/map.hpp>
 #include <base/range.h>
+#include <base/scope_guard.h>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 
+
+namespace CurrentMetrics
+{
+    extern const Metric AccessEntitiesRecoveryThreads;
+    extern const Metric AccessEntitiesRecoveryThreadsActive;
+    extern const Metric AccessEntitiesRecoveryThreadsScheduled;
+}
 
 namespace DB
 {
@@ -28,6 +43,11 @@ namespace ErrorCodes
     extern const int DIRECTORY_DOESNT_EXIST;
     extern const int FILE_DOESNT_EXIST;
     extern const int LOGICAL_ERROR;
+}
+
+namespace ServerSetting
+{
+    extern const ServerSettingsUInt64 max_access_entities_recovery_thread_pool_size;
 }
 
 
@@ -158,6 +178,108 @@ namespace
     bool tryParseUUID(const String & str, UUID & id)
     {
         return tryParse(id, str);
+    }
+
+
+    /// An entity file as the recovery scan found it. `entity` is null for a file that could not be
+    /// read or parsed; `mtime` is meaningful only when it is not.
+    struct EntityFileContents
+    {
+        AccessEntityPtr entity;
+        std::filesystem::file_time_type mtime;
+    };
+
+    EntityFileContents readEntityFileContents(
+        const String & directory_path, const UUID & id, const std::filesystem::path & path, LoggerPtr log)
+    {
+        EntityFileContents contents;
+        contents.entity = tryReadEntityFile(getEntityFilePath(directory_path, id), log);
+        if (!contents.entity)
+            return contents;
+
+        std::error_code mtime_ec;
+        contents.mtime = std::filesystem::last_write_time(path, mtime_ec);
+        if (mtime_ec)
+            LOG_WARNING(log, "Failed to stat {}: {}", path.string(), mtime_ec.message());
+        return contents;
+    }
+
+
+    /// Reads the entity files the recovery scan found, in the order it found them. Reading and
+    /// parsing them is the whole cost of the recovery, which the server runs before it starts
+    /// listening, so with many entities it is worth spreading over threads.
+    std::vector<EntityFileContents> readEntityFiles(
+        const std::vector<std::pair<UUID, std::filesystem::path>> & entity_files, const String & directory_path, LoggerPtr log)
+    {
+        std::vector<EntityFileContents> contents(entity_files.size());
+
+        size_t configured_threads = 0;
+        /// There is no server context in unit tests, where the entity files are read one by one.
+        if (auto context = Context::getGlobalContextInstance())
+            configured_threads = context->getServerSettings()[ServerSetting::max_access_entities_recovery_thread_pool_size];
+
+        /// More threads than files is useless, and the pool is created before the server starts
+        /// listening, so a setting cranked to an absurd value would hold up startup on thread
+        /// creation alone.
+        const size_t num_threads = std::min<size_t>({configured_threads, entity_files.size(), 4 * getNumberOfCPUCoresToUse()});
+
+        if (num_threads <= 1)
+        {
+            LOG_DEBUG(log, "Reading {} access entity files sequentially", entity_files.size());
+            for (size_t i = 0; i < entity_files.size(); ++i)
+                contents[i] = readEntityFileContents(directory_path, entity_files[i].first, entity_files[i].second, log);
+            return contents;
+        }
+
+        LOG_DEBUG(log, "Reading {} access entity files in {} threads", entity_files.size(), num_threads);
+
+        /// Threads take the files one by one instead of a fixed range each, because the files differ
+        /// in size. A file that cannot be read or parsed is logged and left out of the result, as it
+        /// is when the files are read one by one, so only an unexpected error ends the read early.
+        std::atomic<size_t> next_index = 0;
+        std::atomic<bool> failed = false;
+
+        ThreadPool pool(
+            CurrentMetrics::AccessEntitiesRecoveryThreads,
+            CurrentMetrics::AccessEntitiesRecoveryThreadsActive,
+            CurrentMetrics::AccessEntitiesRecoveryThreadsScheduled,
+            num_threads,
+            /* max_free_threads_ = */ num_threads,
+            /* queue_size_ = */ 0);
+
+        {
+            ThreadPoolCallbackRunnerLocal<void> runner(pool, ThreadName::ACCESS_ENTITIES_RECOVERY);
+            runner.reserve(num_threads);
+
+            for (size_t i = 0; i < num_threads; ++i)
+            {
+                runner.enqueueAndKeepTrack([&entity_files, &directory_path, &contents, &next_index, &failed, log]
+                {
+                    bool completed = false;
+                    SCOPE_EXIT(
+                    {
+                        if (!completed)
+                            failed = true;
+                    });
+
+                    while (!failed.load(std::memory_order_relaxed))
+                    {
+                        const size_t index = next_index.fetch_add(1);
+                        if (index >= entity_files.size())
+                            break;
+
+                        contents[index] = readEntityFileContents(
+                            directory_path, entity_files[index].first, entity_files[index].second, log);
+                    }
+
+                    completed = true;
+                });
+            }
+
+            runner.waitForAllToFinishAndRethrowFirstError();
+        }
+
+        return contents;
     }
 }
 
@@ -383,7 +505,8 @@ void DiskAccessStorage::reloadAllAndRebuildLists()
     std::map<std::pair<AccessEntityType, String>, LoadedEntity> loaded_entities;
     std::vector<std::filesystem::path> files_to_remove;
 
-    /// Iterate through the access directory: load <uuid>.sql files, find stale files for removal.
+    /// Iterate through the access directory: collect <uuid>.sql files, find stale files for removal.
+    std::vector<std::pair<UUID, std::filesystem::path>> entity_files;
     for (const auto & directory_entry : std::filesystem::directory_iterator(directory_path))
     {
         if (!directory_entry.is_regular_file())
@@ -404,16 +527,20 @@ void DiskAccessStorage::reloadAllAndRebuildLists()
         if (path.extension() != ".sql")
             continue;
 
-        const auto access_entity_file_path = getEntityFilePath(directory_path, id);
-        auto entity = tryReadEntityFile(access_entity_file_path, getLogger());
+        entity_files.emplace_back(id, path);
+    }
+
+    /// Deduplicate in the order the files were found, so that which of two files claiming the same
+    /// name is kept does not depend on the order the reads happened to finish in.
+    const auto contents = readEntityFiles(entity_files, directory_path, getLogger());
+    for (size_t i = 0; i < entity_files.size(); ++i)
+    {
+        const auto & [id, path] = entity_files[i];
+        const auto & entity = contents[i].entity;
         if (!entity)
             continue; /// Unparsable file; we leave it on disk for inspection.
 
-        std::error_code mtime_ec;
-        auto mtime = std::filesystem::last_write_time(path, mtime_ec);
-        if (mtime_ec)
-            LOG_WARNING(getLogger(), "Failed to stat {}: {}", path.string(), mtime_ec.message());
-
+        const auto mtime = contents[i].mtime;
         auto key = std::make_pair(entity->getType(), entity->getName());
         auto it = loaded_entities.find(key);
 

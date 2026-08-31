@@ -6,6 +6,7 @@ namespace DB
 {
 
 #define THREAD_NAME_VALUES(M)\
+    M(ACCESS_ENTITIES_RECOVERY, "AccessRecovery") \
     M(AGGREGATED_ZOOKEEPER_LOG, "AggrZooLog") \
     M(AGGREGATOR_DESTRUCTION, "AggregDestruct") \
     M(AGGREGATOR_POOL, "AggregatorPool") \
