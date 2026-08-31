@@ -35,8 +35,9 @@ MergeTreeDataPartCompact::MergeTreeDataPartCompact(
     const MergeTreePartInfo & info_,
     const MutableDataPartStoragePtr & data_part_storage_,
     const IMergeTreeDataPart * parent_part_,
-    PartDirIntent intent)
-    : IMergeTreeDataPart(storage_, storage_settings, name_, info_, data_part_storage_, Type::Compact, parent_part_, intent)
+    PartDirIntent intent,
+    std::optional<MarkType> disk_mark_type)
+    : IMergeTreeDataPart(storage_, storage_settings, name_, info_, data_part_storage_, Type::Compact, parent_part_, intent, disk_mark_type)
 {
 }
 

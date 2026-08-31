@@ -152,7 +152,10 @@ public:
         const MutableDataPartStoragePtr & data_part_storage_,
         Type part_type_,
         const IMergeTreeDataPart * parent_part_,
-        PartDirIntent intent);
+        PartDirIntent intent,
+        /// The mark type found in the part directory, when the caller has already looked. Leave
+        /// unset to have `OpenExisting` look it up.
+        std::optional<MarkType> disk_mark_type = {});
 
     virtual bool isStoredOnReadonlyDisk() const = 0;
     virtual bool isStoredOnRemoteDisk() const = 0;

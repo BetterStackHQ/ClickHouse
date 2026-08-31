@@ -83,6 +83,9 @@ private:
 
     std::optional<MergeTreePartInfo> part_info;
     std::optional<MergeTreeDataPartType> part_type;
+    /// Set when the part format was probed from the part directory: the part is then constructed
+    /// with this mark type instead of listing the same directory again.
+    std::optional<MarkType> disk_mark_type;
     MutableDataPartStoragePtr part_storage;
     const IMergeTreeDataPart * parent_part = nullptr;
     ProjectionDescriptionRawPtr projection = nullptr;

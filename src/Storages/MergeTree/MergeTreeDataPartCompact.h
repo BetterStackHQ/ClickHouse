@@ -29,7 +29,8 @@ public:
         const MergeTreePartInfo & info_,
         const MutableDataPartStoragePtr & data_part_storage_,
         const IMergeTreeDataPart * parent_part_,
-        PartDirIntent intent);
+        PartDirIntent intent,
+        std::optional<MarkType> disk_mark_type = {});
 
     Strings getPreferredFileOrder() const override;
 

@@ -1575,15 +1575,42 @@ void StorageMergeTree::loadMutations()
     /// `currently_processing_in_background_mutex`. See STID 3367-4813.
     chassert(current_mutations_by_version.empty());
 
+    /// `loadDataParts` has just listed the table directory and set the mutation entries it saw
+    /// aside, so most of the time no second listing is needed. Nothing that runs between the two
+    /// touches these entries: the parts load only renames broken parts into `detached` and
+    /// removes covered ones, and the table is not published yet, so no query can add a mutation.
+    /// A disk the parts scan skipped (a broken one) is listed here, as it was before.
+    const auto entries_seen_by_parts_scan = takeMutationEntryNamesSeenByPartsScan();
+
     for (const auto & disk : getDisks())
     {
-        for (auto it = disk->iterateDirectory(relative_data_path); it->isValid(); it->next())
+        Strings entry_names;
+        bool seen_by_parts_scan = false;
+
+        for (const auto & [scanned_disk, scanned_entry_names] : entries_seen_by_parts_scan)
         {
-            if (startsWith(it->name(), "mutation_"))
+            if (scanned_disk == disk)
             {
-                MergeTreeMutationEntry entry(disk, relative_data_path, it->name());
+                entry_names = scanned_entry_names;
+                seen_by_parts_scan = true;
+                break;
+            }
+        }
+
+        if (!seen_by_parts_scan)
+            for (auto it = disk->iterateDirectory(relative_data_path); it->isValid(); it->next())
+                if (startsWith(it->name(), "mutation_") || startsWith(it->name(), "tmp_mutation_"))
+                    entry_names.push_back(it->name());
+
+        for (const auto & entry_name : entry_names)
+        {
+            const String entry_path = fs::path(relative_data_path) / entry_name;
+
+            if (startsWith(entry_name, "mutation_"))
+            {
+                MergeTreeMutationEntry entry(disk, relative_data_path, entry_name);
                 UInt64 block_number = entry.block_number;
-                LOG_DEBUG(log, "Loading mutation: {} entry, commands size: {}", it->name(), entry.commands->size());
+                LOG_DEBUG(log, "Loading mutation: {} entry, commands size: {}", entry_name, entry.commands->size());
 
                 if (!entry.tid.isNonTransactional() && !entry.csn)
                 {
@@ -1598,8 +1625,8 @@ void StorageMergeTree::loadMutations()
                         /// was garbage-collected (e.g. after upgrade from a version that advanced tail_ptr).
                         /// In either case the mutation was not committed and should be removed.
                         LOG_DEBUG(log, "Mutation entry {} was created by transaction {}, but it was not committed. Removing mutation entry",
-                                  it->name(), entry.tid);
-                        disk->removeFile(it->path());
+                                  entry_name, entry.tid);
+                        disk->removeFile(entry_path);
                         continue;
                     }
                 }
@@ -1610,9 +1637,10 @@ void StorageMergeTree::loadMutations()
 
                 incrementMutationsCounters(mutation_counters, *entry_it->second.commands);
             }
-            else if (startsWith(it->name(), "tmp_mutation_"))
+            else
             {
-                disk->removeFile(it->path());
+                chassert(startsWith(entry_name, "tmp_mutation_"));
+                disk->removeFile(entry_path);
             }
         }
     }
