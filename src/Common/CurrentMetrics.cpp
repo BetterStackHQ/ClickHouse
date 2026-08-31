@@ -159,6 +159,9 @@
     M(NamedCollectionsLoaderThreads, "Number of threads in the named collections loader thread pool.") \
     M(NamedCollectionsLoaderThreadsActive, "Number of threads in the named collections loader thread pool running a task.") \
     M(NamedCollectionsLoaderThreadsScheduled, "Number of queued or active jobs in the named collections loader thread pool.") \
+    M(AccessEntitiesRecoveryThreads, "Number of threads in the access entities recovery thread pool.") \
+    M(AccessEntitiesRecoveryThreadsActive, "Number of threads in the access entities recovery thread pool running a task.") \
+    M(AccessEntitiesRecoveryThreadsScheduled, "Number of queued or active jobs in the access entities recovery thread pool.") \
     M(DestroyAggregatesThreads, "Number of threads in the thread pool for destroy aggregate states.") \
     M(DestroyAggregatesThreadsActive, "Number of threads in the thread pool for destroy aggregate states running a task.") \
     M(DestroyAggregatesThreadsScheduled, "Number of queued or active jobs in the thread pool for destroy aggregate states.") \
