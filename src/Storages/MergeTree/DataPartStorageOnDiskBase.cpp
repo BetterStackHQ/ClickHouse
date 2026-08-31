@@ -1094,8 +1094,7 @@ size_t DataPartStorageOnDiskBase::getFileSize(const std::string & file_name) con
     return getFileSizeImpl(file_name);
 }
 
-std::optional<IDataPartStorage::FileTypeAndSize>
-DataPartStorageOnDiskBase::getFileTypeAndSizeIfExists(const std::string & name) const
+std::optional<FileTypeAndSize> DataPartStorageOnDiskBase::getFileTypeAndSizeIfExists(const std::string & name) const
 {
     /// Same overlay as `existsFile` and `getFileSize`: a member of the skp_idx.packed archive is a
     /// regular file of the archive's recorded size. It has no filesystem entry of its own, so it

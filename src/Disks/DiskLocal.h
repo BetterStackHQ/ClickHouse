@@ -89,7 +89,7 @@ public:
     std::unique_ptr<ReadBufferFromFileBase> openFileIfExists(
         const String & path,
         const ReadSettings & settings,
-        std::optional<size_t> read_hint = {}) const override;
+        std::optional<size_t> read_hint) const override;
 
     std::unique_ptr<WriteBufferFromFileBase> writeFile(
         const String & path,
