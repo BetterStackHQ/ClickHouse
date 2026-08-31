@@ -4,6 +4,9 @@
 # disk this process can write to, and the non-replicated engine whose mutations live on disk.
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The test leaves a stale temporary part directory behind on purpose, and removing one is logged
+# at warning level, which the client would otherwise print to stderr and fail the test with.
+CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=error
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
 
