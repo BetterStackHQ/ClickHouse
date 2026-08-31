@@ -1,3 +1,5 @@
+import shlex
+
 import pytest
 
 from helpers.cluster import ClickHouseCluster
@@ -5,6 +7,8 @@ from helpers.cluster import ClickHouseCluster
 NAMED_COLLECTIONS_PATH = "/var/lib/clickhouse/named_collections"
 
 NUM_COLLECTIONS = 500
+
+NUM_THREADS = 8
 
 
 @pytest.fixture(scope="module")
@@ -59,6 +63,23 @@ def dump_collections(node):
     )
 
 
+def write_file(node, file_name, content):
+    path = shlex.quote(f"{NAMED_COLLECTIONS_PATH}/{file_name}")
+    node.exec_in_container(
+        ["bash", "-c", f"echo {shlex.quote(content)} > {path}"], user="root"
+    )
+
+
+def remove_file(node, file_name):
+    path = shlex.quote(f"{NAMED_COLLECTIONS_PATH}/{file_name}")
+    node.exec_in_container(["bash", "-c", f"rm -f {path}"], user="root")
+
+
+def restart_if_stopped(node):
+    if node.get_process_pid("clickhouse") is None:
+        node.start_clickhouse()
+
+
 def test_parallel_load(cluster):
     """The collections loaded by the thread pool are the ones loaded sequentially."""
     parallel = cluster.instances["node_parallel"]
@@ -85,9 +106,11 @@ def test_parallel_load(cluster):
             )
 
         assert parallel.contains_in_log(
-            f"Loading {NUM_COLLECTIONS} named collections in 8 threads"
+            f"Loading {NUM_COLLECTIONS} named collections in {NUM_THREADS} threads"
         )
-        assert not sequential.contains_in_log("named collections in")
+        assert sequential.contains_in_log(
+            f"Loading {NUM_COLLECTIONS} named collections sequentially"
+        )
 
         # The collections are usable and modifiable after a parallel load.
         parallel.query("ALTER NAMED COLLECTION collection_0 SET key1 = 'updated'")
@@ -108,28 +131,27 @@ def test_parallel_load(cluster):
 
 @pytest.mark.parametrize("instance_name", ["node_parallel", "node_sequential"])
 def test_unparsable_collection_aborts_startup(cluster, instance_name):
-    """An unparsable metadata file fails the load the same way with and without the pool."""
+    """An unparsable metadata file fails the load with and without the pool."""
     node = cluster.instances[instance_name]
     count = 20
 
     try:
         create_collections(node, count)
+        # Rotate before the failing start so that the grep below sees only this start.
+        node.rotate_logs()
         node.stop_clickhouse()
-        node.exec_in_container(
-            [
-                "bash",
-                "-c",
-                f"echo 'not a create query' > {NAMED_COLLECTIONS_PATH}/broken.sql",
-            ],
-            user="root",
-        )
+        write_file(node, "broken.sql", "not a create query")
 
+        # `start_clickhouse` only observes that the process is gone, which a server
+        # that has not forked yet also satisfies, so the log is what proves the load
+        # actually failed.
         node.start_clickhouse(expected_to_fail=True)
-        assert node.contains_in_log("Syntax error")
-
-        node.exec_in_container(
-            ["bash", "-c", f"rm {NAMED_COLLECTIONS_PATH}/broken.sql"], user="root"
+        assert node.get_process_pid("clickhouse") is None
+        assert "Syntax error (in file broken.sql)" in node.grep_in_log(
+            "Syntax error", only_latest=True
         )
+
+        remove_file(node, "broken.sql")
         node.start_clickhouse()
         assert (
             node.query(
@@ -138,4 +160,41 @@ def test_unparsable_collection_aborts_startup(cluster, instance_name):
             == f"{count}\n"
         )
     finally:
+        remove_file(node, "broken.sql")
+        restart_if_stopped(node)
         drop_collections(node, count)
+
+
+@pytest.mark.parametrize("instance_name", ["node_parallel", "node_sequential"])
+def test_duplicate_collection_name_aborts_startup(cluster, instance_name):
+    """Two files naming one collection fail the load with and without the pool."""
+    node = cluster.instances[instance_name]
+
+    try:
+        # `a.sql` and `%61.sql` both unescape to the collection name `a`.
+        node.rotate_logs()
+        node.stop_clickhouse()
+        write_file(node, "a.sql", "CREATE NAMED COLLECTION a AS key1 = 'one'")
+        write_file(node, "%61.sql", "CREATE NAMED COLLECTION a AS key1 = 'two'")
+
+        # Nothing else on disk can fail, so both modes report the duplicate. Which
+        # error wins is unspecified only when a duplicate and some other bad file are
+        # present at the same time.
+        node.start_clickhouse(expected_to_fail=True)
+        assert node.get_process_pid("clickhouse") is None
+        assert "Found duplicate named collection `a`" in node.grep_in_log(
+            "Found duplicate named collection", only_latest=True
+        )
+
+        remove_file(node, "%61.sql")
+        node.start_clickhouse()
+        assert (
+            node.query(
+                "SELECT count() FROM system.named_collections WHERE source = 'SQL'"
+            )
+            == "1\n"
+        )
+    finally:
+        remove_file(node, "%61.sql")
+        restart_if_stopped(node)
+        node.query("DROP NAMED COLLECTION IF EXISTS a")
