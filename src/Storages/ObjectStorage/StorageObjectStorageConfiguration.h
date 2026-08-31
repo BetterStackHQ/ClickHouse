@@ -54,6 +54,9 @@ struct StorageObjectStorageQuerySettings
     size_t list_object_keys_size;
     bool throw_on_zero_files_match;
     bool ignore_non_existent_file;
+
+    /// Read settings:
+    bool use_object_metadata_cache = false;
 };
 
 
