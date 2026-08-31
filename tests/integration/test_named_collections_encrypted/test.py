@@ -120,7 +120,8 @@ def test_local_storage_encrypted(cluster):
 
 def test_local_storage_encrypted_parallel_load(cluster):
     node = cluster.instances["node_encrypted_parallel"]
-    collections = [f"collection{i}" for i in range(2, 6)]
+    # More collections than the configured pool size, so that the pool is not clamped below it.
+    collections = [f"collection{i}" for i in range(2, 14)]
 
     for i, name in enumerate(collections):
         node.query(
@@ -133,8 +134,10 @@ def test_local_storage_encrypted_parallel_load(cluster):
     node.restart_clickhouse()
 
     assert node.query(query) == expected
+    # The thread count depends on the number of cores the runner gives us, so match only the
+    # message that names the parallel path.
     assert node.contains_in_log(
-        f"Loading {len(collections)} named collections in 8 threads"
+        f"Loading {len(collections)} named collections in "
     )
 
     for name in collections:

@@ -8,8 +8,6 @@ MARK_PATH = f"{ACCESS_PATH}/need_rebuild_lists.mark"
 
 NUM_USERS = 200
 
-NUM_THREADS = 8
-
 
 @pytest.fixture(scope="module")
 def cluster():
@@ -76,13 +74,12 @@ def mark_exists(node):
     return result.strip() == "yes"
 
 
+# The thread count depends on the number of cores the runner gives us, so match only the message
+# that names the path taken.
 @pytest.mark.parametrize(
     "instance_name,expected_log",
     [
-        (
-            "node_parallel",
-            f"Reading {NUM_USERS} access entity files in {NUM_THREADS} threads",
-        ),
+        ("node_parallel", f"Reading {NUM_USERS} access entity files in "),
         ("node_sequential", f"Reading {NUM_USERS} access entity files sequentially"),
     ],
 )
@@ -104,5 +101,11 @@ def test_recovery_rebuilds_every_entity(cluster, instance_name, expected_log):
         assert expected_log in node.grep_in_log("access entity files", only_latest=True)
         assert dump_access(node) == expected
         assert not mark_exists(node)
+
+        # The assertions above read the entities the recovery holds in memory. Restart once more,
+        # this time without the mark, to read them back through the `.list` files the recovery
+        # wrote, which is what catches an entity paired with the wrong id.
+        node.restart_clickhouse()
+        assert dump_access(node) == expected
     finally:
         drop_users(node, NUM_USERS)

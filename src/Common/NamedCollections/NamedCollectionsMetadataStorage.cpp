@@ -149,9 +149,14 @@ public:
     {
         /// A metadata file holds one `CREATE NAMED COLLECTION` query and is a few kilobytes at most,
         /// so the default buffer size would allocate three orders of magnitude more than it reads.
+        /// When the size cannot be read the buffer keeps its default size and the open below reports
+        /// whatever is wrong with the file, as it did before the size was consulted at all.
         const auto path = getPath(file_name);
-        const size_t file_size = fs::file_size(path);
-        ReadBufferFromFile in(path, std::min<size_t>(DBMS_DEFAULT_BUFFER_SIZE, file_size), -1, nullptr, 0, file_size);
+        std::error_code size_error;
+        const size_t file_size = fs::file_size(path, size_error);
+        const size_t buffer_size
+            = size_error ? DBMS_DEFAULT_BUFFER_SIZE : std::max<size_t>(1, std::min<size_t>(DBMS_DEFAULT_BUFFER_SIZE, file_size));
+        ReadBufferFromFile in(path, buffer_size);
         std::string data;
         readStringUntilEOF(data, in);
         return readHook(data);
@@ -570,7 +575,8 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
     /// differ in size. A failed collection stops the others: the first error is rethrown below and
     /// aborts the whole load, as it does when the collections are read sequentially. Which error is
     /// reported when several files are bad is not specified in either mode - sequentially it is the
-    /// one earliest in the listing, here it is whichever thread failed first.
+    /// one earliest in the listing, here it is the one from the first failing task in enqueue order,
+    /// which corresponds to no order the files are in.
     std::atomic<size_t> next_index = 0;
     std::atomic<bool> failed = false;
 

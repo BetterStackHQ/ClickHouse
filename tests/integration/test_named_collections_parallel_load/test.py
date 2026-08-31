@@ -8,8 +8,6 @@ NAMED_COLLECTIONS_PATH = "/var/lib/clickhouse/named_collections"
 
 NUM_COLLECTIONS = 500
 
-NUM_THREADS = 8
-
 
 @pytest.fixture(scope="module")
 def cluster():
@@ -105,8 +103,10 @@ def test_parallel_load(cluster):
                 == f"{NUM_COLLECTIONS}\n"
             )
 
+        # The thread count depends on the number of cores the runner gives us, so match only the
+        # message that names the path taken.
         assert parallel.contains_in_log(
-            f"Loading {NUM_COLLECTIONS} named collections in {NUM_THREADS} threads"
+            f"Loading {NUM_COLLECTIONS} named collections in "
         )
         assert sequential.contains_in_log(
             f"Loading {NUM_COLLECTIONS} named collections sequentially"
