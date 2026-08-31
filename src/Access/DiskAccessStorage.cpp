@@ -220,7 +220,8 @@ namespace
 
         /// More threads than files is useless, and the pool is created before the server starts
         /// listening, so a setting cranked to an absurd value would hold up startup on thread
-        /// creation alone.
+        /// creation alone. A few threads per core leaves room for the ones waiting on a read
+        /// without letting the pool grow without bound.
         const size_t num_threads = std::min<size_t>({configured_threads, entity_files.size(), 4 * getNumberOfCPUCoresToUse()});
 
         if (num_threads <= 1)
