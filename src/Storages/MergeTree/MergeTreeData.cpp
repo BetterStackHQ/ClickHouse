@@ -2773,8 +2773,8 @@ std::vector<MergeTreeData::LoadPartResult> MergeTreeData::loadDataPartsFromDisk(
 
     /// Parts of one table share a schema, so parse each distinct `columns.txt` once for the whole
     /// batch. Released with this call: it accelerates the load and keeps nothing afterwards.
-    auto columns_parse_memo
-        = std::make_shared<PartColumnsParseMemo>(StorageMetadataPtr(getInMemoryMetadataPtr(getContext(), false)));
+    const auto metadata_snapshot = getInMemoryMetadataPtr(getContext(), false);
+    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>(metadata_snapshot);
 
     ThreadPoolCallbackRunnerLocal<void> runner(getActivePartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_ACTIVE_PARTS);
     while (true)
@@ -3556,8 +3556,8 @@ try
     auto blocker = CannotAllocateThreadFaultInjector::blockFaultInjections();
 
     /// As in `loadDataPartsFromDisk`: one parse of each distinct `columns.txt` for the batch.
-    auto columns_parse_memo
-        = std::make_shared<PartColumnsParseMemo>(StorageMetadataPtr(getInMemoryMetadataPtr(getContext(), false)));
+    const auto metadata_snapshot = getInMemoryMetadataPtr(getContext(), false);
+    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>(metadata_snapshot);
 
     ThreadPoolCallbackRunnerLocal<void> runner(getOutdatedPartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_OUTDATED_PARTS);
 

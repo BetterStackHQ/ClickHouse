@@ -108,6 +108,14 @@ std::unique_ptr<ReadBufferFromFileBase> IDisk::readFileIfExists( /// NOLINT
         return {};
 }
 
+std::unique_ptr<ReadBufferFromFileBase> IDisk::openFileIfExists( /// NOLINT
+    const String & path,
+    const ReadSettings & settings,
+    std::optional<size_t> read_hint) const
+{
+    return readFileIfExists(path, settings, read_hint);
+}
+
 DiskTransactionPtr IDisk::createTransaction()
 {
     return std::make_shared<FakeDiskTransaction>(*this);
