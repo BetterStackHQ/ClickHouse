@@ -358,6 +358,37 @@ size_t DiskLocal::getFileSize(const String & path) const
     return fs::file_size(fs::path(disk_path) / path);
 }
 
+std::optional<IDisk::FileTypeAndSize> DiskLocal::getFileTypeAndSizeIfExists(const String & path) const
+{
+    /// One `stat` in place of the base implementation's `existsDirectory` + `existsFile` +
+    /// `getFileSize`. The three answers all come out of the same `struct stat`, so this is a
+    /// syscall count change only. `stat` follows symlinks, as the `fs::` probes it replaces do.
+    auto full_path = fs::path(disk_path) / path;
+
+    struct stat st{};
+    if (::stat(full_path.string().c_str(), &st) != 0)
+    {
+        /// The errors that `fs::is_directory`/`fs::is_regular_file` report as "not there" rather
+        /// than by throwing: a missing component of the path, a non-directory used as one, and a
+        /// name too long for the filesystem (see `existsOrFileNameTooLong`). Everything else
+        /// (EACCES, EIO, ESTALE, ...) is a genuine problem and must keep throwing, so that callers
+        /// can still tell "missing" from "broken".
+        if (errno == ENOENT || errno == ENOTDIR || errno == ENAMETOOLONG)
+            return {};
+        ErrnoException::throwFromPath(ErrorCodes::CANNOT_STAT, path, "Cannot stat file: {}", path);
+    }
+
+    if (S_ISDIR(st.st_mode))
+        return FileTypeAndSize{.is_directory = true, .size = 0};
+
+    /// Anything that is neither a directory nor a regular file (a fifo, a socket, a device) is
+    /// what `existsFile` and `existsDirectory` both report as absent today.
+    if (!S_ISREG(st.st_mode))
+        return {};
+
+    return FileTypeAndSize{.is_directory = false, .size = static_cast<UInt64>(st.st_size)};
+}
+
 void DiskLocal::createDirectory(const String & path)
 {
     fs::create_directory(fs::path(disk_path) / path);
