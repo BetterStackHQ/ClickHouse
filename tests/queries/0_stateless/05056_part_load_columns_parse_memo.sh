@@ -94,7 +94,7 @@ for i in 1 2 3; do
         FROM numbers(10)"
 done
 ${CLICKHOUSE_CLIENT} --query "DETACH TABLE t_memo_quantized SYNC"
-${CLICKHOUSE_CLIENT} --query "ATTACH TABLE t_memo_quantized"
+${CLICKHOUSE_CLIENT} --allow_experimental_codecs 1 --query "ATTACH TABLE t_memo_quantized"
 
 echo -n "parts: "
 ${CLICKHOUSE_CLIENT} --query "
