@@ -423,6 +423,13 @@ private:
     /// source dictionary does not fit within the memo's bounds.
     DictionaryTranslation * findOrInstallTranslation(const ColumnLowCardinality & src);
 
+    /// The index in `dst_dictionary` of the value at `position` in `src_nested`, taken from
+    /// `translation` or computed and memoized there. `dst_dictionary` is this column's dictionary and
+    /// `src_nested` is the nested column of the dictionary `translation` was installed for; both are
+    /// arguments so that a loop over a range resolves them once.
+    UInt64 translateThroughMemo(
+        DictionaryTranslation & translation, IColumnUnique & dst_dictionary, const IColumn & src_nested, size_t position);
+
     void compactInplace();
     void compactInplaceToNullable();
     void compactIfSharedDictionary();
