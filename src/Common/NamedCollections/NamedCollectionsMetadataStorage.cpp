@@ -23,6 +23,7 @@
 #include <Common/ZooKeeper/ZooKeeper.h>
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
 #include <Common/escapeForFileName.h>
+#include <Common/getNumberOfCPUCoresToUse.h>
 #include <Common/logger_useful.h>
 #include <Common/setThreadName.h>
 #include <Common/threadPoolCallbackRunner.h>
@@ -50,7 +51,7 @@ namespace Setting
 
 namespace ServerSetting
 {
-    extern const ServerSettingsUInt64 named_collections_load_thread_pool_size;
+    extern const ServerSettingsUInt64 max_named_collections_loading_thread_pool_size;
 }
 
 namespace ErrorCodes
@@ -496,12 +497,23 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAll() const
     /// collections it dominates the part of server startup that happens before the server listens.
     /// Replicated storage keeps the sequential path: its reads go through a single ZooKeeper session
     /// and it has to tolerate collections disappearing between the listing and the read.
-    const size_t num_threads = storage->isReplicated()
+    const size_t configured_threads = storage->isReplicated()
         ? 0
-        : getContext()->getServerSettings()[ServerSetting::named_collections_load_thread_pool_size];
+        : getContext()->getServerSettings()[ServerSetting::max_named_collections_loading_thread_pool_size];
 
-    if (num_threads > 1 && collection_names.size() > 1)
-        return getAllInParallel(collection_names, std::min(num_threads, collection_names.size()));
+    /// More threads than collections is useless, and the pool is created before the server starts
+    /// listening, so a setting cranked to an absurd value would hold up startup on thread creation
+    /// alone. The cap on cores matches what the other startup loading pools end up using in practice.
+    const size_t num_threads = std::min<size_t>(
+        {configured_threads, collection_names.size(), 4 * getNumberOfCPUCoresToUse()});
+
+    if (num_threads > 1)
+        return getAllInParallel(collection_names, num_threads);
+
+    LOG_DEBUG(
+        getLogger("NamedCollectionsMetadataStorage"),
+        "Loading {} named collections sequentially",
+        collection_names.size());
 
     return getAllSequentially(collection_names);
 }
@@ -550,7 +562,9 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
 
     /// Threads take the collections one by one instead of a fixed range each, because the files
     /// differ in size. A failed collection stops the others: the first error is rethrown below and
-    /// aborts the whole load, exactly as it does when the collections are read sequentially.
+    /// aborts the whole load, as it does when the collections are read sequentially. Which error is
+    /// reported when several files are bad is not specified in either mode - sequentially it is the
+    /// one earliest in the listing, here it is whichever thread failed first.
     std::atomic<size_t> next_index = 0;
     std::atomic<bool> failed = false;
 
@@ -558,7 +572,9 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
         CurrentMetrics::NamedCollectionsLoaderThreads,
         CurrentMetrics::NamedCollectionsLoaderThreadsActive,
         CurrentMetrics::NamedCollectionsLoaderThreadsScheduled,
-        num_threads);
+        num_threads,
+        /* max_free_threads_ = */ num_threads,
+        /* queue_size_ = */ 0);
 
     {
         ThreadPoolCallbackRunnerLocal<void> runner(pool, ThreadName::NAMED_COLLECTIONS_LOAD);
@@ -566,7 +582,7 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
 
         for (size_t i = 0; i < num_threads; ++i)
         {
-            runner.enqueueAndKeepTrack([&]
+            runner.enqueueAndKeepTrack([this, &collections, &collection_names, &next_index, &failed]
             {
                 bool completed = false;
                 SCOPE_EXIT(
@@ -591,8 +607,10 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
         runner.waitForAllToFinishAndRethrowFirstError();
     }
 
-    /// Merging in the listing order makes the result, and the error reported for a duplicate name,
-    /// identical to what the sequential path produces.
+    /// Merging in the listing order makes the loaded set identical to what the sequential path
+    /// produces. It does not make the reported error identical: a listing that contains both a
+    /// duplicate name and an unparsable file aborts above with the parse error, where the sequential
+    /// path may reach the duplicate first. Both modes abort the load on the first error either way.
     NamedCollectionsMap result;
     for (size_t i = 0; i < collection_names.size(); ++i)
     {
@@ -604,6 +622,7 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
                 "Found duplicate named collection `{}`",
                 collection_name);
         }
+        chassert(collections[i]);
         result.emplace(collection_name, std::move(collections[i]));
     }
     return result;
