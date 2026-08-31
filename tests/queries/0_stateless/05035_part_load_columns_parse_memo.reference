@@ -1,0 +1,16 @@
+-- every part shares one schema
+parts: 5
+rows: 50
+types resolved per part:
+a	Array(Nullable(UInt64))	5
+d	Decimal(18, 4)	5
+id	UInt32	5
+s	String	5
+-- a part written before a schema change
+parts: 2
+rows: 20
+types resolved per part:
+id	UInt32	2
+n	Nullable(Int64)	1
+s	String	2
+sum of the new column: 45

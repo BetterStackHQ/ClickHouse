@@ -20,6 +20,7 @@
 #include <Storages/MergeTree/MergeTreeIOSettings.h>
 #include <Storages/MergeTree/MergeTreeIndexGranularity.h>
 #include <Storages/MergeTree/MergeTreeIndexGranularityInfo.h>
+#include <Storages/MergeTree/PartColumnsParseMemo.h>
 #include <Storages/MergeTree/MergeTreePartInfo.h>
 #include <Storages/MergeTree/MergeTreePartition.h>
 #include <Storages/MergeTree/PatchParts/SourcePartsSetForPatch.h>
@@ -204,7 +205,13 @@ public:
 
     /// Initialize columns (from columns.txt if exists, or create from column files if not).
     /// Load various metadata into memory: checksums from checksums.txt, index if required, etc.
-    void loadColumnsChecksumsIndexes(bool require_columns_checksums, bool check_consistency, bool load_metadata_version = true);
+    /// `columns_parse_memo`, when given, parses `columns.txt` once per distinct content across a
+    /// batch of parts being loaded instead of once per part.
+    void loadColumnsChecksumsIndexes(
+        bool require_columns_checksums,
+        bool check_consistency,
+        bool load_metadata_version = true,
+        const PartColumnsParseMemoPtr & columns_parse_memo = nullptr);
 
     void loadRowsCountFileForUnexpectedPart();
 
@@ -810,7 +817,7 @@ private:
     void loadUUID();
 
     /// Reads columns names and types from columns.txt
-    void loadColumns(bool require, bool load_metadata_version);
+    void loadColumns(bool require, bool load_metadata_version, const PartColumnsParseMemoPtr & columns_parse_memo);
 
     /// Reads columns substreams from columns_substreams.txt.
     void loadColumnsSubstreams();

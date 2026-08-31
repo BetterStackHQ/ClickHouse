@@ -2421,7 +2421,8 @@ MergeTreeData::LoadPartResult MergeTreeData::loadDataPart(
     const String & part_name,
     const DiskPtr & part_disk_ptr,
     MergeTreeDataPartState to_state,
-    DB::SharedMutex & part_loading_mutex)
+    DB::SharedMutex & part_loading_mutex,
+    const PartColumnsParseMemoPtr & columns_parse_memo)
 {
     auto component_guard = Coordination::setCurrentComponent("MergeTreeData::loadDataPart");
     LOG_TRACE(log, "Loading {} part {} from disk {}", magic_enum::enum_name(to_state), part_name, part_disk_ptr->getName());
@@ -2491,7 +2492,8 @@ MergeTreeData::LoadPartResult MergeTreeData::loadDataPart(
 
     try
     {
-        res.part->loadColumnsChecksumsIndexes(require_part_metadata, !part_disk_ptr->isReadOnly());
+        res.part->loadColumnsChecksumsIndexes(
+            require_part_metadata, !part_disk_ptr->isReadOnly(), /* load_metadata_version = */ true, columns_parse_memo);
     }
     catch (...)
     {
@@ -2563,7 +2565,8 @@ MergeTreeData::LoadPartResult MergeTreeData::loadDataPartWithRetries(
     DB::SharedMutex & part_loading_mutex,
     size_t initial_backoff_ms,
     size_t max_backoff_ms,
-    size_t max_tries)
+    size_t max_tries,
+    const PartColumnsParseMemoPtr & columns_parse_memo)
 {
     auto handle_exception = [&, this](std::exception_ptr exception_ptr, size_t try_no)
     {
@@ -2582,7 +2585,7 @@ MergeTreeData::LoadPartResult MergeTreeData::loadDataPartWithRetries(
     {
         try
         {
-            return loadDataPart(part_info, part_name, part_disk_ptr, to_state, part_loading_mutex);
+            return loadDataPart(part_info, part_name, part_disk_ptr, to_state, part_loading_mutex, columns_parse_memo);
         }
         catch (...)
         {
@@ -2609,6 +2612,10 @@ std::vector<MergeTreeData::LoadPartResult> MergeTreeData::loadDataPartsFromDisk(
     DB::SharedMutex part_loading_mutex;
 
     std::vector<LoadPartResult> loaded_parts;
+
+    /// Parts of one table share a schema, so parse each distinct `columns.txt` once for the whole
+    /// batch. Released with this call: it accelerates the load and keeps nothing afterwards.
+    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>();
 
     ThreadPoolCallbackRunnerLocal<void> runner(getActivePartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_ACTIVE_PARTS);
     while (true)
@@ -2642,14 +2649,14 @@ std::vector<MergeTreeData::LoadPartResult> MergeTreeData::loadDataPartsFromDisk(
         /// Capturing by reference here is ok:
         /// part_loading_mutex, part_select_mutex, loaded_parts, parts_to_load are created before runner, so they will outlive it
         runner.enqueueAndKeepTrack(
-            [this, &part_loading_mutex, &part_select_mutex, &loaded_parts, &parts_to_load, part = std::move(current_part)]()
+            [this, &part_loading_mutex, &part_select_mutex, &loaded_parts, &parts_to_load, columns_parse_memo, part = std::move(current_part)]()
             {
                 /// Pass a separate mutex to guard the set of parts, because this lambda
                 /// is called concurrently but with already locked @data_parts_mutex.
                 auto res = loadDataPartWithRetries(
                     part->info, part->name, part->disk,
                     DataPartState::Active, part_loading_mutex, loading_parts_initial_backoff_ms,
-                    loading_parts_max_backoff_ms, loading_parts_max_tries);
+                    loading_parts_max_backoff_ms, loading_parts_max_tries, columns_parse_memo);
 
                 part->is_loaded = true;
                 bool is_active_part = res.part->getState() == DataPartState::Active;
@@ -3312,6 +3319,9 @@ try
 
     ThreadPoolCallbackRunnerLocal<void> runner(getOutdatedPartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_OUTDATED_PARTS);
 
+    /// As in `loadDataPartsFromDisk`: one parse of each distinct `columns.txt` for the batch.
+    auto columns_parse_memo = std::make_shared<PartColumnsParseMemo>();
+
     bool replicated = dynamic_cast<StorageReplicatedMergeTree *>(this) != nullptr;
     while (true)
     {
@@ -3341,14 +3351,14 @@ try
         }
 
         /// num_loaded_parts will outlive runner, so capturing by reference is ok
-        runner.enqueueAndKeepTrack([this, my_part = part, &num_loaded_parts, replicated]()
+        runner.enqueueAndKeepTrack([this, my_part = part, &num_loaded_parts, replicated, columns_parse_memo]()
         {
             auto blocker_for_runner_thread = CannotAllocateThreadFaultInjector::blockFaultInjections();
 
             auto res = loadDataPartWithRetries(
                 my_part->info, my_part->name, my_part->disk,
                 DataPartState::Outdated, data_parts_mutex, loading_parts_initial_backoff_ms,
-                loading_parts_max_backoff_ms, loading_parts_max_tries);
+                loading_parts_max_backoff_ms, loading_parts_max_tries, columns_parse_memo);
 
             ++num_loaded_parts;
             if (res.is_broken)
