@@ -28,6 +28,16 @@ def cluster():
             stay_alive=True,
         )
         cluster.add_instance(
+            "node_encrypted_parallel",
+            main_configs=[
+                "configs/config.d/named_collections_encrypted_parallel.xml",
+            ],
+            user_configs=[
+                "configs/users.d/users.xml",
+            ],
+            stay_alive=True,
+        )
+        cluster.add_instance(
             "node_with_keeper_encrypted",
             main_configs=[
                 "configs/config.d/named_collections_with_zookeeper_encrypted.xml",
@@ -106,6 +116,29 @@ def test_local_storage_encrypted(cluster):
     check_encrypted_content(node)
 
     node.query("DROP NAMED COLLECTION collection2")
+
+
+def test_local_storage_encrypted_parallel_load(cluster):
+    node = cluster.instances["node_encrypted_parallel"]
+    collections = [f"collection{i}" for i in range(2, 6)]
+
+    for i, name in enumerate(collections):
+        node.query(
+            f"CREATE NAMED COLLECTION {name} AS key1={1234 + i}, key2='value{i}'"
+        )
+
+    query = "SELECT name, collection FROM system.named_collections ORDER BY name"
+    expected = node.query(query)
+
+    node.restart_clickhouse()
+
+    assert node.query(query) == expected
+    assert node.contains_in_log(
+        f"Loading {len(collections)} named collections in 8 threads"
+    )
+
+    for name in collections:
+        node.query(f"DROP NAMED COLLECTION {name}")
 
 
 def test_zookeper_storage_encrypted(cluster):

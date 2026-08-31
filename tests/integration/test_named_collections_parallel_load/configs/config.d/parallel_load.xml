@@ -1,3 +1,4 @@
 <clickhouse>
     <max_named_collections_loading_thread_pool_size>8</max_named_collections_loading_thread_pool_size>
+    <display_secrets_in_show_and_select>1</display_secrets_in_show_and_select>
 </clickhouse>
