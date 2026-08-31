@@ -159,7 +159,9 @@ std::unique_ptr<ReadBufferFromFileBase> DataPartStorageOnDiskFull::readFileIfExi
     const ReadSettings & settings,
     std::optional<size_t> read_hint) const
 {
-    return volume->getDisk()->readFileIfExists(fs::path(root_path) / part_dir / name, settings, read_hint);
+    /// `openFileIfExists`, not `readFileIfExists`: the only callers of this hook load per-part
+    /// metadata, where several optional files are probed for every part.
+    return volume->getDisk()->openFileIfExists(fs::path(root_path) / part_dir / name, settings, read_hint);
 }
 
 std::unique_ptr<WriteBufferFromFileBase> DataPartStorageOnDiskFull::writeFile(

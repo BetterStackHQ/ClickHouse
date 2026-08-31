@@ -86,6 +86,11 @@ public:
         std::optional<size_t> read_hint,
         ReadPipeline & pipeline) const override;
 
+    std::unique_ptr<ReadBufferFromFileBase> openFileIfExists(
+        const String & path,
+        const ReadSettings & settings,
+        std::optional<size_t> read_hint = {}) const override;
+
     std::unique_ptr<WriteBufferFromFileBase> writeFile(
         const String & path,
         size_t buf_size,
@@ -158,6 +163,15 @@ protected:
     void checkAccessImpl(const String & path) override;
 
 private:
+    /// The body of `prepareRead`. `known_size` lets a caller that has just stat'ed the file pass
+    /// the size in instead of having it stat'ed again; `nullopt` means "look it up".
+    void prepareReadImpl(
+        const String & path,
+        const ReadSettings & settings,
+        std::optional<size_t> read_hint,
+        ReadPipeline & pipeline,
+        std::optional<UInt64> known_size) const;
+
     std::optional<UInt64> tryReserve(UInt64 bytes, const std::optional<ReservationConstraints> & constraints = std::nullopt);
 
     /// Setup disk for healthy check.

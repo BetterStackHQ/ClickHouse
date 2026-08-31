@@ -277,6 +277,18 @@ public:
         const ReadSettings & settings,
         std::optional<size_t> read_hint = {}) const;
 
+    /// Same contract as `readFileIfExists`, for the part metadata load path, which asks the
+    /// question once per optional file per part and so is worth sparing the separate probe.
+    /// The default is `readFileIfExists`; a disk overrides it when preparing the read already
+    /// tells it whether the file is there.
+    virtual std::unique_ptr<ReadBufferFromFileBase> openFileIfExists( /// NOLINT
+        const String & path,
+        const ReadSettings & settings,
+        std::optional<size_t> read_hint = {}) const
+    {
+        return readFileIfExists(path, settings, read_hint);
+    }
+
     /// Open the file for write and return WriteBufferFromFileBase object.
     virtual std::unique_ptr<WriteBufferFromFileBase> writeFile( /// NOLINT
         const String & path,
