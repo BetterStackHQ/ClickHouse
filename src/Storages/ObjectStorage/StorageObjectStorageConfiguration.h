@@ -54,7 +54,8 @@ struct StorageObjectStorageQuerySettings
     bool throw_on_zero_files_match;
     bool ignore_non_existent_file;
 
-    /// Read settings:
+    /// The in-class default is load-bearing: configurations that do not populate this field
+    /// (`Local`, `Web`) keep the object metadata cache off.
     bool use_object_metadata_cache = false;
 };
 

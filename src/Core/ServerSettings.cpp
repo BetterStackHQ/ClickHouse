@@ -2363,6 +2363,9 @@ void ServerSettings::checkUnknownSettings(const Poco::Util::AbstractConfiguratio
         "schema_inference_cache_max_elements_for_hdfs",
         "schema_inference_cache_max_elements_for_local",
 
+        /// Object metadata cache settings
+        "object_metadata_cache_max_entries",
+
         /// Config processing
         "include_from",
 

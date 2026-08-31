@@ -162,7 +162,10 @@ protected:
         size_t max_block_size,
         FormatParserSharedResourcesPtr parser_shared_resources,
         FormatFilterInfoPtr format_filter_info,
-        bool need_only_count);
+        bool need_only_count,
+        /// Only a caller that invalidates the entry when a read of the object fails may serve
+        /// metadata from the object metadata cache, so this stays off for every other caller.
+        bool allow_object_metadata_cache = false);
 
     ReaderHolder createReader();
 
