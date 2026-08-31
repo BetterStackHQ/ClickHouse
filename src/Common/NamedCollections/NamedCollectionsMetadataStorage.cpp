@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <Core/Defines.h>
 #include <Core/ServerSettings.h>
 #include <Core/Settings.h>
 #include <IO/FileEncryptionCommon.h>
@@ -146,7 +147,11 @@ public:
 
     std::string read(const std::string & file_name) const override
     {
-        ReadBufferFromFile in(getPath(file_name));
+        /// A metadata file holds one `CREATE NAMED COLLECTION` query and is a few kilobytes at most,
+        /// so the default buffer size would allocate three orders of magnitude more than it reads.
+        const auto path = getPath(file_name);
+        const size_t file_size = fs::file_size(path);
+        ReadBufferFromFile in(path, std::min<size_t>(DBMS_DEFAULT_BUFFER_SIZE, file_size), -1, nullptr, 0, file_size);
         std::string data;
         readStringUntilEOF(data, in);
         return readHook(data);
