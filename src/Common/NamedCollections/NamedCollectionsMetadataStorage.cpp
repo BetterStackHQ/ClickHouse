@@ -508,7 +508,8 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAll() const
 
     /// More threads than collections is useless, and the pool is created before the server starts
     /// listening, so a setting cranked to an absurd value would hold up startup on thread creation
-    /// alone. The cap on cores matches what the other startup loading pools end up using in practice.
+    /// alone. A few threads per core leaves room for the ones waiting on a read without letting the
+    /// pool grow without bound.
     const size_t num_threads = std::min<size_t>(
         {configured_threads, collection_names.size(), 4 * getNumberOfCPUCoresToUse()});
 
