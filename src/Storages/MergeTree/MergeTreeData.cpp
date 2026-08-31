@@ -3043,6 +3043,12 @@ void MergeTreeData::loadDataParts(bool skip_sanity_checks, std::optional<std::un
 
         refresh_parts_task->scheduleAfter(refresh_parts_interval);
     }
+
+    /// `StorageMergeTree::loadMutations` takes the entries immediately after this call returns, and
+    /// it is their only consumer - a replicated table keeps its mutations in Keeper. Drop them for
+    /// anything else rather than holding the names for the life of the table.
+    if (dynamic_cast<StorageReplicatedMergeTree *>(this))
+        mutation_entries_seen_by_parts_scan.clear();
 }
 
 void MergeTreeData::startStatisticsCache()
