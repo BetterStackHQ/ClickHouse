@@ -9,6 +9,7 @@
 #include <Common/Exception.h>
 #include <Common/ThreadPool_fwd.h>
 #include <Disks/DiskType.h>
+#include <Disks/FileTypeAndSize.h>
 #include <IO/ReadSettings.h>
 #include <IO/WriteSettings.h>
 #include <Disks/WriteMode.h>
@@ -187,11 +188,6 @@ public:
     /// EIO, ...) must keep throwing here; only "not there" turns into `nullopt`.
     /// The default composes the three separate probes, so a disk that does not override it keeps
     /// its current behaviour and cost.
-    struct FileTypeAndSize
-    {
-        bool is_directory = false;
-        UInt64 size = 0;
-    };
     virtual std::optional<FileTypeAndSize> getFileTypeAndSizeIfExists(const String & path) const;
 
     /// Create directory.
