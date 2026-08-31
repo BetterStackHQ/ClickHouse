@@ -280,10 +280,7 @@ public:
     virtual std::unique_ptr<ReadBufferFromFileBase> openFileIfExists( /// NOLINT
         const String & path,
         const ReadSettings & settings,
-        std::optional<size_t> read_hint = {}) const
-    {
-        return readFileIfExists(path, settings, read_hint);
-    }
+        std::optional<size_t> read_hint = {}) const;
 
     /// Open the file for write and return WriteBufferFromFileBase object.
     virtual std::unique_ptr<WriteBufferFromFileBase> writeFile( /// NOLINT
