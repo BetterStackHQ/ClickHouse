@@ -1156,6 +1156,17 @@ size_t DataPartStorageOnDiskBase::getFileSize(const std::string & file_name) con
     return getFileSizeImpl(file_name);
 }
 
+std::optional<IDataPartStorage::FileTypeAndSize>
+DataPartStorageOnDiskBase::getFileTypeAndSizeIfExists(const std::string & name) const
+{
+    /// Same overlay as `existsFile` and `getFileSize`: a member of the skp_idx.packed archive is a
+    /// regular file of the archive's recorded size. It has no filesystem entry of its own, so it
+    /// can never also be a directory and the overlay may be consulted first, for free.
+    if (auto reader = getArchiveReaderForFile(name))
+        return FileTypeAndSize{.is_directory = false, .size = reader->getFileSize(name)};
+    return getFileTypeAndSizeIfExistsImpl(name);
+}
+
 void DataPartStorageOnDiskBase::prepareRead(
     const std::string & name,
     const ReadSettings & settings,

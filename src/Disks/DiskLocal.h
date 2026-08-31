@@ -50,6 +50,8 @@ public:
 
     size_t getFileSize(const String & path) const override;
 
+    std::optional<FileTypeAndSize> getFileTypeAndSizeIfExists(const String & path) const override;
+
     void createDirectory(const String & path) override;
 
     void createDirectories(const String & path) override;

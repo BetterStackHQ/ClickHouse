@@ -65,18 +65,21 @@ void MergeTreeDataPartChecksum::checkEqual(const MergeTreeDataPartChecksum & rhs
 
 void MergeTreeDataPartChecksum::checkSize(const IDataPartStorage & storage, const String & name) const
 {
-    // This is a projection, no need to check its size.
-    if (storage.existsDirectory(name))
-        return;
+    /// One lookup answers all three questions this check asks - is it a directory, does it exist,
+    /// how big is it - where the storage supports it.
+    auto entry = storage.getFileTypeAndSizeIfExists(name);
 
-    if (!storage.existsFile(name))
+    if (!entry)
         throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "{} doesn't exist", std::filesystem::path(storage.getRelativePath()) / name);
 
-    UInt64 size = storage.getFileSize(name);
-    if (size != file_size)
+    // This is a projection, no need to check its size.
+    if (entry->is_directory)
+        return;
+
+    if (entry->size != file_size)
         throw Exception(ErrorCodes::BAD_SIZE_OF_FILE_IN_DATA_PART,
             "{} has unexpected size: {} instead of {}",
-            std::filesystem::path(storage.getRelativePath()) / name, size, file_size);
+            std::filesystem::path(storage.getRelativePath()) / name, entry->size, file_size);
 }
 
 
