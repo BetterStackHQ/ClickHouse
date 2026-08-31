@@ -59,6 +59,7 @@ public:
     /// serves the substreams instead. Keeps the archive out of the read pipeline and the callers.
     bool existsFile(const std::string & name) const final;
     size_t getFileSize(const std::string & file_name) const final;
+    std::optional<FileTypeAndSize> getFileTypeAndSizeIfExists(const std::string & name) const final;
     void prepareRead(
         const std::string & name,
         const ReadSettings & settings,
@@ -266,6 +267,16 @@ private:
     /// existsFile/getFileSize/prepareRead/readFileIfExists add the overlay and delegate here.
     virtual bool existsFileImpl(const std::string & name) const = 0;
     virtual size_t getFileSizeImpl(const std::string & file_name) const = 0;
+    /// Native single-lookup type+size. The default composes the separate probes above; a storage
+    /// whose backing disk answers both in one metadata call overrides it.
+    virtual std::optional<FileTypeAndSize> getFileTypeAndSizeIfExistsImpl(const std::string & name) const
+    {
+        if (existsDirectory(name))
+            return FileTypeAndSize{.is_directory = true, .size = 0};
+        if (existsFileImpl(name))
+            return FileTypeAndSize{.is_directory = false, .size = getFileSizeImpl(name)};
+        return {};
+    }
     virtual void prepareReadImpl(
         const std::string & name,
         const ReadSettings & settings,

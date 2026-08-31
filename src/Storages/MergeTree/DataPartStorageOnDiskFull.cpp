@@ -100,6 +100,15 @@ size_t DataPartStorageOnDiskFull::getFileSizeImpl(const String & file_name) cons
     return volume->getDisk()->getFileSize(fs::path(root_path) / part_dir / file_name);
 }
 
+std::optional<IDataPartStorage::FileTypeAndSize>
+DataPartStorageOnDiskFull::getFileTypeAndSizeIfExistsImpl(const std::string & name) const
+{
+    auto entry = volume->getDisk()->getFileTypeAndSizeIfExists(fs::path(root_path) / part_dir / name);
+    if (!entry)
+        return {};
+    return FileTypeAndSize{.is_directory = entry->is_directory, .size = entry->size};
+}
+
 std::optional<UInt64> DataPartStorageOnDiskFull::getPackedFileUncompressedSize(const std::string & file_name) const
 {
     if (looksLikePackedSkipIndexFile(file_name))
