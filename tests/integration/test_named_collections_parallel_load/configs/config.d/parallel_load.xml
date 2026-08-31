@@ -1,0 +1,3 @@
+<clickhouse>
+    <named_collections_load_thread_pool_size>8</named_collections_load_thread_pool_size>
+</clickhouse>

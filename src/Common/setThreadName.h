@@ -113,6 +113,7 @@ namespace DB
     M(MSG_BROKER_SCHEDULE_POOL, "BgMBSchPool") \
     M(MYSQL_DATABASE_CLEANUP, "MySQLDBCleaner") \
     M(MYSQL_HANDLER, "MySQLHandler") \
+    M(NAMED_COLLECTIONS_LOAD, "NamedCollLoad") \
     M(OBJECT_STORAGE_SHUTDOWN, "ObjStorShutdwn") \
     M(ORC_FILE, "ORCFile") \
     M(PARALLEL_COMPRESSORS_POOL, "ParallelCompres") \

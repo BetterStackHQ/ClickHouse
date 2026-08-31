@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <Core/ServerSettings.h>
 #include <Core/Settings.h>
 #include <IO/FileEncryptionCommon.h>
 #include <IO/ReadBufferFromFile.h>
@@ -10,21 +11,33 @@
 #include <Interpreters/Context.h>
 #include <Parsers/ParserCreateQuery.h>
 #include <Parsers/parseQuery.h>
+#include <base/scope_guard.h>
 #include <base/sort.h>
 #include <boost/algorithm/hex.hpp>
+#include <Common/CurrentMetrics.h>
 #include <Common/NamedCollections/NamedCollectionConfiguration.h>
 #include <Common/NamedCollections/NamedCollectionsMetadataStorage.h>
+#include <Common/ThreadPool.h>
 #include <Common/ZooKeeper/IKeeper.h>
 #include <Common/ZooKeeper/KeeperException.h>
 #include <Common/ZooKeeper/ZooKeeper.h>
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
 #include <Common/escapeForFileName.h>
 #include <Common/logger_useful.h>
+#include <Common/setThreadName.h>
+#include <Common/threadPoolCallbackRunner.h>
 #if CLICKHOUSE_CLOUD
 #include <Core/KMS.h>
 #endif
 
 namespace fs = std::filesystem;
+
+namespace CurrentMetrics
+{
+    extern const Metric NamedCollectionsLoaderThreads;
+    extern const Metric NamedCollectionsLoaderThreadsActive;
+    extern const Metric NamedCollectionsLoaderThreadsScheduled;
+}
 
 namespace DB
 {
@@ -33,6 +46,11 @@ namespace Setting
     extern const SettingsBool fsync_metadata;
     extern const SettingsUInt64 max_parser_backtracks;
     extern const SettingsUInt64 max_parser_depth;
+}
+
+namespace ServerSetting
+{
+    extern const ServerSettingsUInt64 named_collections_load_thread_pool_size;
 }
 
 namespace ErrorCodes
@@ -472,8 +490,26 @@ MutableNamedCollectionPtr NamedCollectionsMetadataStorage::get(const std::string
 
 NamedCollectionsMap NamedCollectionsMetadataStorage::getAll() const
 {
+    auto collection_names = listCollections();
+
+    /// Reading and parsing one file per collection is the whole cost of this method, so with many
+    /// collections it dominates the part of server startup that happens before the server listens.
+    /// Replicated storage keeps the sequential path: its reads go through a single ZooKeeper session
+    /// and it has to tolerate collections disappearing between the listing and the read.
+    const size_t num_threads = storage->isReplicated()
+        ? 0
+        : getContext()->getServerSettings()[ServerSetting::named_collections_load_thread_pool_size];
+
+    if (num_threads > 1 && collection_names.size() > 1)
+        return getAllInParallel(collection_names, std::min(num_threads, collection_names.size()));
+
+    return getAllSequentially(collection_names);
+}
+
+NamedCollectionsMap NamedCollectionsMetadataStorage::getAllSequentially(const std::vector<std::string> & collection_names) const
+{
     NamedCollectionsMap result;
-    for (const auto & collection_name : listCollections())
+    for (const auto & collection_name : collection_names)
     {
         if (result.contains(collection_name))
         {
@@ -498,6 +534,77 @@ NamedCollectionsMap NamedCollectionsMetadataStorage::getAll() const
             }
             throw;
         }
+    }
+    return result;
+}
+
+NamedCollectionsMap NamedCollectionsMetadataStorage::getAllInParallel(
+    const std::vector<std::string> & collection_names, size_t num_threads) const
+{
+    LOG_DEBUG(
+        getLogger("NamedCollectionsMetadataStorage"),
+        "Loading {} named collections in {} threads",
+        collection_names.size(), num_threads);
+
+    std::vector<MutableNamedCollectionPtr> collections(collection_names.size());
+
+    /// Threads take the collections one by one instead of a fixed range each, because the files
+    /// differ in size. A failed collection stops the others: the first error is rethrown below and
+    /// aborts the whole load, exactly as it does when the collections are read sequentially.
+    std::atomic<size_t> next_index = 0;
+    std::atomic<bool> failed = false;
+
+    ThreadPool pool(
+        CurrentMetrics::NamedCollectionsLoaderThreads,
+        CurrentMetrics::NamedCollectionsLoaderThreadsActive,
+        CurrentMetrics::NamedCollectionsLoaderThreadsScheduled,
+        num_threads);
+
+    {
+        ThreadPoolCallbackRunnerLocal<void> runner(pool, ThreadName::NAMED_COLLECTIONS_LOAD);
+        runner.reserve(num_threads);
+
+        for (size_t i = 0; i < num_threads; ++i)
+        {
+            runner.enqueueAndKeepTrack([&]
+            {
+                bool completed = false;
+                SCOPE_EXIT(
+                {
+                    if (!completed)
+                        failed = true;
+                });
+
+                while (!failed.load(std::memory_order_relaxed))
+                {
+                    const size_t index = next_index.fetch_add(1);
+                    if (index >= collection_names.size())
+                        break;
+
+                    collections[index] = get(collection_names[index]);
+                }
+
+                completed = true;
+            });
+        }
+
+        runner.waitForAllToFinishAndRethrowFirstError();
+    }
+
+    /// Merging in the listing order makes the result, and the error reported for a duplicate name,
+    /// identical to what the sequential path produces.
+    NamedCollectionsMap result;
+    for (size_t i = 0; i < collection_names.size(); ++i)
+    {
+        const auto & collection_name = collection_names[i];
+        if (result.contains(collection_name))
+        {
+            throw Exception(
+                ErrorCodes::NAMED_COLLECTION_ALREADY_EXISTS,
+                "Found duplicate named collection `{}`",
+                collection_name);
+        }
+        result.emplace(collection_name, std::move(collections[i]));
     }
     return result;
 }
