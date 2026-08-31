@@ -407,6 +407,10 @@ private:
     /// resets the memo. `source` is held so that the address of a released source dictionary cannot
     /// be reused by a different one while an entry refers to it - the idiom of `dictionary_holder`
     /// in `ColumnsHashing.h`.
+    /// Identifying a source by its address and size therefore rests on one invariant: a dictionary's
+    /// content never changes in place under a stable address and size. `nestedToNullable` and
+    /// `nestedRemoveNullable` are the only operations that could break it, and neither is reachable
+    /// for a dictionary that is live as a memo entry's source.
     struct DictionaryTranslation
     {
         ColumnPtr source;

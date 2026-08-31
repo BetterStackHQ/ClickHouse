@@ -204,10 +204,15 @@ void ColumnLowCardinality::doInsertFrom(const IColumn & src, size_t n)
         compactIfSharedDictionary();
         const auto & nested = *low_cardinality_src->getDictionary().getNestedColumn();
 
-        /// A merge assembles its output one row at a time, so this branch is entered once per output
-        /// row per LowCardinality column, always with the same pair of dictionaries. Translating
-        /// through the memo replaces the destination dictionary's hash probe with an array lookup;
-        /// see `doInsertRangeFrom`, which memoizes the same translations.
+        /// Callers that assemble a block one row at a time - a merge, a join, a window function, a
+        /// TTL rewrite, the vertical merge's gatherer - reach this branch once per output row per
+        /// LowCardinality column, drawing from a small set of source dictionaries: one per part a
+        /// merge reads, one per block a join holds. Translating through the memo replaces the
+        /// destination dictionary's hash probe with an array lookup; see `doInsertRangeFrom`, which
+        /// memoizes the same translations.
+        /// The float and nullable-source guards in `findOrInstallTranslation` are shared with that
+        /// range arm and are conservative here: this arm's unmemoized baseline is `uniqueInsertFrom`
+        /// itself, the very call the memo caches, so neither guard is needed for correctness on it.
         if (DictionaryTranslation * translation = findOrInstallTranslation(*low_cardinality_src))
         {
             idx.insertIndex(translateThroughMemo(*translation, getDictionary(), nested, position));
@@ -273,6 +278,15 @@ ColumnLowCardinality::DictionaryTranslation * ColumnLowCardinality::findOrInstal
         break;
     }
 
+    /// At the bounds the memo stops growing instead of evicting: a merge of more parts than there
+    /// are entries interleaves its sources, so an evicting memo would refill an entry per call and
+    /// never serve a hit. Ranges from the remaining source dictionaries take the bulk path. Tested
+    /// before the budget below is summed, so that a call which can neither hit nor refill an entry
+    /// declines after the single scan above - which is every call from a declined source, once the
+    /// memo is full.
+    if (!stale && translations->size() >= MAX_TRANSLATIONS)
+        return nullptr;
+
     /// The entry being installed or refilled is excluded, so that a source dictionary which grew
     /// under an existing entry cannot push the total past the budget: such a refill is refused and
     /// the entry keeps its old, in-budget allocation.
@@ -290,12 +304,6 @@ ColumnLowCardinality::DictionaryTranslation * ColumnLowCardinality::findOrInstal
         stale->positions.assign(source_size, UNTRANSLATED);
         return stale;
     }
-
-    /// At the bounds the memo stops growing instead of evicting: a merge of more parts than there
-    /// are entries interleaves its sources, so an evicting memo would refill an entry per call and
-    /// never serve a hit. Ranges from the remaining source dictionaries take the bulk path.
-    if (translations->size() >= MAX_TRANSLATIONS)
-        return nullptr;
 
     DictionaryTranslation & installed = translations->emplace_back();
     installed.source = source;

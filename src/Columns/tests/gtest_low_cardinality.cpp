@@ -3,9 +3,16 @@
 
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeLowCardinality.h>
+#include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypeString.h>
 #include <Common/Exception.h>
 
 #include <gtest/gtest.h>
+
+#include <optional>
+#include <random>
+#include <string>
+#include <vector>
 
 using namespace DB;
 
@@ -163,4 +170,138 @@ TEST(ColumnLowCardinality, InsertRangeFromOutOfBound)
     ASSERT_NO_THROW(destination->insertRangeFrom(*source, 3, 0));
     ASSERT_NO_THROW(destination->insertRangeFrom(*source, 0, 3));
     ASSERT_EQ(destination->size(), 5);
+}
+
+namespace
+{
+    DataTypePtr lowCardinalityNullableString()
+    {
+        return std::make_shared<DataTypeLowCardinality>(std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()));
+    }
+
+    /// A LowCardinality column over its own dictionary, holding `values` in order; an empty optional
+    /// is a NULL.
+    ColumnPtr makeSource(const DataTypePtr & type, const std::vector<std::optional<String>> & values)
+    {
+        auto column = type->createColumn();
+
+        for (const auto & value : values)
+        {
+            if (value)
+                column->insert(Field(*value));
+            else
+                column->insert(Field());
+        }
+
+        return std::move(column);
+    }
+}
+
+TEST(ColumnLowCardinality, InsertFromInstallsTranslation)
+{
+    auto type = lowCardinalityNullableString();
+
+    auto source = makeSource(type, {"a", "b", std::nullopt, "", "b"});
+    const auto & lc_source = assert_cast<const ColumnLowCardinality &>(*source);
+
+    /// An installed entry holds a reference to the source dictionary for as long as it lives, so it
+    /// is visible from outside the column in that dictionary's reference count. Nothing but
+    /// `insertFrom` touches the memo here, which is what makes this an assertion that the scalar arm
+    /// translates through it rather than probing the destination dictionary per row.
+    const auto references_before = lc_source.getDictionaryPtr()->use_count();
+
+    {
+        auto destination = type->createColumn();
+        auto & lc_destination = assert_cast<ColumnLowCardinality &>(*destination);
+
+        lc_destination.insertFrom(*source, 0);
+        const auto references_installed = lc_source.getDictionaryPtr()->use_count();
+        ASSERT_GT(references_installed, references_before);
+
+        /// One entry per source dictionary, not one per row.
+        for (size_t row = 1; row < source->size(); ++row)
+            lc_destination.insertFrom(*source, row);
+        ASSERT_EQ(lc_source.getDictionaryPtr()->use_count(), references_installed);
+
+        ASSERT_EQ(destination->size(), source->size());
+        for (size_t row = 0; row < destination->size(); ++row)
+        {
+            ASSERT_EQ(lc_destination.isNullAt(row), lc_source.isNullAt(row)) << "at row " << row;
+            if (!lc_destination.isNullAt(row))
+                ASSERT_EQ(lc_destination.getDataAt(row), lc_source.getDataAt(row)) << "at row " << row;
+        }
+    }
+
+    /// The entry, and the reference it held, go with the column that owned the memo.
+    ASSERT_EQ(lc_source.getDictionaryPtr()->use_count(), references_before);
+}
+
+TEST(ColumnLowCardinality, InsertFromCrossDictionaryMatchesUniqueInsertFrom)
+{
+    auto type = lowCardinalityNullableString();
+
+    /// More sources than the memo holds entries for, so both of its answers are exercised: the first
+    /// sources get an entry each and the rest are declined and translated the unmemoized way.
+    constexpr size_t num_sources = 20;
+    constexpr size_t rows_per_source = 64;
+    /// More distinct values than an index of one byte can address, so the destination widens its
+    /// index type while the memo is live.
+    constexpr size_t num_values = 400;
+
+    std::vector<ColumnPtr> sources;
+    std::minstd_rand random(20260831);
+
+    for (size_t source_index = 0; source_index < num_sources; ++source_index)
+    {
+        std::vector<std::optional<String>> values;
+        values.reserve(rows_per_source);
+
+        for (size_t row = 0; row < rows_per_source; ++row)
+        {
+            const size_t value = random() % num_values;
+            if (value % 37 == 0)
+                values.emplace_back(std::nullopt);
+            else if (value % 41 == 0)
+                values.emplace_back("");
+            else
+                values.emplace_back("v" + std::to_string(value));
+        }
+
+        sources.push_back(makeSource(type, values));
+    }
+
+    auto memoized_column = type->createColumn();
+    auto reference_column = type->createColumn();
+    auto & memoized = assert_cast<ColumnLowCardinality &>(*memoized_column);
+    auto & reference = assert_cast<ColumnLowCardinality &>(*reference_column);
+
+    /// `insertFrom` translates through the memo; `insertFromFullColumn` on the source's own nested
+    /// column is the `uniqueInsertFrom` that the unmemoized branch of `insertFrom` makes, so the two
+    /// destinations must come out identical - down to their indexes, because both dictionaries are
+    /// filled by the same calls in the same order. Coverage of the memo's execution rests on this
+    /// test being compiled with the memo present: with it, every row below goes through it.
+    for (size_t row = 0; row < rows_per_source; ++row)
+    {
+        /// Interleaved, so that consecutive calls ask the memo for different entries.
+        for (const auto & source : sources)
+        {
+            const auto & lc_source = assert_cast<const ColumnLowCardinality &>(*source);
+            memoized.insertFrom(*source, row);
+            reference.insertFromFullColumn(*lc_source.getDictionary().getNestedColumn(), lc_source.getIndexAt(row));
+        }
+    }
+
+    ASSERT_EQ(memoized.size(), num_sources * rows_per_source);
+    ASSERT_EQ(memoized.size(), reference.size());
+    ASSERT_EQ(memoized.getDictionary().size(), reference.getDictionary().size());
+    /// The point of `num_values`: a one-byte index could not have addressed this dictionary.
+    ASSERT_GT(memoized.getDictionary().size(), size_t{255});
+
+    for (size_t row = 0; row < memoized.size(); ++row)
+    {
+        ASSERT_EQ(memoized.getIndexAt(row), reference.getIndexAt(row)) << "at row " << row;
+        ASSERT_EQ(memoized.isNullAt(row), reference.isNullAt(row)) << "at row " << row;
+        if (!memoized.isNullAt(row))
+            ASSERT_EQ(memoized.getDataAt(row), reference.getDataAt(row)) << "at row " << row;
+    }
 }
