@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Tags: no-shared-merge-tree, no-object-storage
+# Tags: no-shared-merge-tree, no-object-storage, no-random-merge-tree-settings
 # The test edits files inside the part directory, so the part must be stored as separate files
-# (min_bytes_for_full_part_storage = 0) on a local disk this process can write to.
+# (min_bytes_for_full_part_storage = 0) on a local disk this process can write to, and it names
+# the files it edits, so the settings that decide how a part is laid out must not be randomized.
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
