@@ -88,7 +88,7 @@ std::unique_ptr<ReadBufferFromFileBase> IDisk::readFile(
     return pipeline.build();
 }
 
-std::optional<IDisk::FileTypeAndSize> IDisk::getFileTypeAndSizeIfExists(const String & path) const
+std::optional<FileTypeAndSize> IDisk::getFileTypeAndSizeIfExists(const String & path) const
 {
     if (existsDirectory(path))
         return FileTypeAndSize{.is_directory = true, .size = 0};

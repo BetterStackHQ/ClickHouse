@@ -333,7 +333,7 @@ size_t DiskLocal::getFileSize(const String & path) const
     return fs::file_size(fs::path(disk_path) / path);
 }
 
-std::optional<IDisk::FileTypeAndSize> DiskLocal::getFileTypeAndSizeIfExists(const String & path) const
+std::optional<FileTypeAndSize> DiskLocal::getFileTypeAndSizeIfExists(const String & path) const
 {
     /// One `stat` in place of the base implementation's `existsDirectory` + `existsFile` +
     /// `getFileSize`. The three answers all come out of the same `struct stat`, so this is a
