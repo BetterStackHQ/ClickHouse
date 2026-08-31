@@ -45,6 +45,10 @@ private:
 
     std::vector<std::string> listCollections() const;
 
+    NamedCollectionsMap getAllSequentially(const std::vector<std::string> & collection_names) const;
+
+    NamedCollectionsMap getAllInParallel(const std::vector<std::string> & collection_names, size_t num_threads) const;
+
     ASTCreateNamedCollectionQuery readCreateQuery(const std::string & collection_name) const;
 
     void writeCreateQuery(const String & collection_name, const String & create_statement, bool replace = false);
