@@ -2289,12 +2289,15 @@ private:
     /// Returns default settings for storage with possible changes from global config.
     virtual std::unique_ptr<MergeTreeSettings> getDefaultSettings() const = 0;
 
+    /// `columns_parse_memo` is shared by the parts of one loading batch so that a schema they
+    /// have in common is parsed once; see `PartColumnsParseMemo`.
     LoadPartResult loadDataPart(
         const MergeTreePartInfo & part_info,
         const String & part_name,
         const DiskPtr & part_disk_ptr,
         MergeTreeDataPartState to_state,
-        DB::SharedMutex & part_loading_mutex);
+        DB::SharedMutex & part_loading_mutex,
+        const PartColumnsParseMemoPtr & columns_parse_memo = nullptr);
 
     LoadPartResult loadDataPartWithRetries(
         const MergeTreePartInfo & part_info,
@@ -2304,7 +2307,8 @@ private:
         DB::SharedMutex & part_loading_mutex,
         size_t backoff_ms,
         size_t max_backoff_ms,
-        size_t max_tries);
+        size_t max_tries,
+        const PartColumnsParseMemoPtr & columns_parse_memo = nullptr);
 
     /// Create zero-copy exclusive lock for part and disk. Useful for coordination of
     /// distributed operations which can lead to data duplication. Implemented only in ReplicatedMergeTree.

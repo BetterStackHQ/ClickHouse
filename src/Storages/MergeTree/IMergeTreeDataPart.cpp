@@ -1472,7 +1472,11 @@ void IMergeTreeDataPart::setEstimates(const Estimates & new_estimates)
     estimates = new_estimates;
 }
 
-void IMergeTreeDataPart::loadColumnsChecksumsIndexes(bool require_columns_checksums, bool check_consistency, bool load_metadata_version)
+void IMergeTreeDataPart::loadColumnsChecksumsIndexes(
+    bool require_columns_checksums,
+    bool check_consistency,
+    bool load_metadata_version,
+    const PartColumnsParseMemoPtr & columns_parse_memo)
 {
     /// Memory should not be limited during ATTACH TABLE query.
     /// This is already true at the server startup but must be also ensured for manual table ATTACH.
@@ -1495,7 +1499,7 @@ void IMergeTreeDataPart::loadColumnsChecksumsIndexes(bool require_columns_checks
         if (!isStoredOnReadonlyDisk())
             loadUUID();
 
-        loadColumns(require_columns_checksums, load_metadata_version);
+        loadColumns(require_columns_checksums, load_metadata_version, columns_parse_memo);
 
         bool has_broken_projections = false;
         {
@@ -2471,7 +2475,7 @@ void IMergeTreeDataPart::loadUUID()
     }
 }
 
-void IMergeTreeDataPart::loadColumns(bool require, bool load_metadata_version)
+void IMergeTreeDataPart::loadColumns(bool require, bool load_metadata_version, const PartColumnsParseMemoPtr & columns_parse_memo)
 {
     String path = fs::path(getDataPartStorage().getRelativePath()) / "columns.txt";
 
@@ -2480,7 +2484,18 @@ void IMergeTreeDataPart::loadColumns(bool require, bool load_metadata_version)
 
     if (auto in = readFileIfExists("columns.txt"))
     {
-        loaded_columns.readText(*in);
+        if (columns_parse_memo)
+        {
+            /// The contents fully determine the parse, so parts that share a schema - nearly all
+            /// of them - resolve their types once for the whole batch instead of once each.
+            String contents;
+            readStringUntilEOF(contents, *in);
+            loaded_columns = columns_parse_memo->parse(contents);
+        }
+        else
+        {
+            loaded_columns.readText(*in);
+        }
 
         for (auto & column : loaded_columns)
             setVersionToAggregateFunctions(column.type, true);
