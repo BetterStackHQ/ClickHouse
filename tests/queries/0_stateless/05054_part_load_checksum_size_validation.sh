@@ -5,6 +5,9 @@
 # the files it edits, so the settings that decide how a part is laid out must not be randomized.
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The test breaks parts on purpose, and a part found broken on load is logged at error level,
+# which the client would otherwise print to stderr and fail the test with.
+CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=none
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
 
@@ -63,6 +66,9 @@ recreate
 PART=$(part_name)
 DETACHED=$(detached_dir)
 ${CLICKHOUSE_CLIENT} --query "ALTER TABLE t_check_size DETACH PARTITION tuple()"
+# Detaching a part leaves its files read-only, so make this one writable before growing it.
+# Removing a file, as the case above does, needs no such thing: that is the directory's permission.
+chmod u+w "${DETACHED}/s.bin"
 printf 'xx' >> "${DETACHED}/s.bin"
 attach_part_error "$PART"
 
