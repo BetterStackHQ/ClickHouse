@@ -150,15 +150,15 @@
     M(DatabaseOnDiskThreads, "Number of threads in the DatabaseOnDisk thread pool.") \
     M(DatabaseOnDiskThreadsActive, "Number of threads in the DatabaseOnDisk thread pool running a task.") \
     M(DatabaseOnDiskThreadsScheduled, "Number of queued or active jobs in the DatabaseOnDisk thread pool.") \
-    M(NamedCollectionsLoaderThreads, "Number of threads in the named collections loader thread pool.") \
-    M(NamedCollectionsLoaderThreadsActive, "Number of threads in the named collections loader thread pool running a task.") \
-    M(NamedCollectionsLoaderThreadsScheduled, "Number of queued or active jobs in the named collections loader thread pool.") \
     M(DatabaseBackupThreads, "Number of threads in the DatabaseBackup thread pool.") \
     M(DatabaseBackupThreadsActive, "Number of threads in the DatabaseBackup thread pool running a task.") \
     M(DatabaseBackupThreadsScheduled, "Number of queued or active jobs in the DatabaseBackup thread pool.") \
     M(DatabaseCatalogThreads, "Number of threads in the DatabaseCatalog thread pool.") \
     M(DatabaseCatalogThreadsActive, "Number of threads in the DatabaseCatalog thread pool running a task.") \
     M(DatabaseCatalogThreadsScheduled, "Number of queued or active jobs in the DatabaseCatalog thread pool.") \
+    M(NamedCollectionsLoaderThreads, "Number of threads in the named collections loader thread pool.") \
+    M(NamedCollectionsLoaderThreadsActive, "Number of threads in the named collections loader thread pool running a task.") \
+    M(NamedCollectionsLoaderThreadsScheduled, "Number of queued or active jobs in the named collections loader thread pool.") \
     M(DestroyAggregatesThreads, "Number of threads in the thread pool for destroy aggregate states.") \
     M(DestroyAggregatesThreadsActive, "Number of threads in the thread pool for destroy aggregate states running a task.") \
     M(DestroyAggregatesThreadsScheduled, "Number of queued or active jobs in the thread pool for destroy aggregate states.") \
