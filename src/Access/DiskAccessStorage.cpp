@@ -280,6 +280,11 @@ namespace
             runner.waitForAllToFinishAndRethrowFirstError();
         }
 
+        /// A thread that stopped early without an exception to rethrow would leave entities out of
+        /// the rebuilt lists, which would then delete their files. Refuse to go on instead.
+        if (failed)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Access entity read failed without reporting an error");
+
         return contents;
     }
 }
