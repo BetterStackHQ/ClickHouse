@@ -1,0 +1,15 @@
+45
+45
+45
+45
+cache on, first read	1	0	1
+cache on, second read	0	1	0
+cache off, first read	1	0	0
+cache off, second read	1	0	0
+45
+S3_OBJECT_CHANGED_DURING_READ
+19900
+S3_ERROR
+45
+stale read invalidated the entry	1
+read after overwrite	1	0	1

@@ -32,6 +32,7 @@ namespace Setting
     extern const SettingsUInt64 remote_read_min_bytes_for_seek;
     extern const SettingsSchemaInferenceMode schema_inference_mode;
     extern const SettingsBool schema_inference_use_cache_for_hdfs;
+    extern const SettingsBool use_object_metadata_cache;
 }
 
 namespace ErrorCodes
@@ -71,6 +72,7 @@ StorageObjectStorageQuerySettings StorageHDFSConfiguration::getQuerySettings(con
         .list_object_keys_size = 0, /// HDFS does not support listing in batches.
         .throw_on_zero_files_match = settings[Setting::hdfs_throw_on_zero_files_match],
         .ignore_non_existent_file = settings[Setting::hdfs_ignore_file_doesnt_exist],
+        .use_object_metadata_cache = settings[Setting::use_object_metadata_cache],
     };
 }
 

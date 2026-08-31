@@ -40,6 +40,7 @@
 #include <Processors/Transforms/ExtractColumnsTransform.h>
 #include <Processors/Transforms/FilterTransform.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
+#include <Storages/Cache/ObjectMetadataCache.h>
 #include <Storages/Cache/SchemaCache.h>
 #include <Storages/HivePartitioningUtils.h>
 #include <Storages/SelectQueryInfo.h>
@@ -86,6 +87,9 @@ namespace ProfileEvents
     extern const Event ObjectStorageGlobFilteredObjects;
     extern const Event ObjectStoragePredicateFilteredObjects;
     extern const Event ObjectStorageReadObjects;
+    extern const Event ObjectMetadataCacheHits;
+    extern const Event ObjectMetadataCacheMisses;
+    extern const Event ObjectMetadataCacheInvalidations;
 }
 
 namespace CurrentMetrics
@@ -335,6 +339,7 @@ StorageObjectStorageSource::StorageObjectStorageSource(
     , format_settings(format_settings_)
     , max_block_size(max_block_size_)
     , need_only_count(need_only_count_)
+    , object_metadata_cache_enabled(configuration_->getQuerySettings(context_).use_object_metadata_cache)
     , parser_shared_resources(std::move(parser_shared_resources_))
     , format_filter_info(std::move(format_filter_info_))
     , read_from_format_info(info)
@@ -377,6 +382,41 @@ std::string StorageObjectStorageSource::getUniqueStoragePathIdentifier(
         result += fmt::format("#read_source_index={}", *object_info.relative_path_with_metadata.read_source_index);
 
     return result;
+}
+
+namespace
+{
+
+/// The object metadata cache is consulted and filled through these helpers; an empty key means
+/// caching is off for this fetch (setting disabled, a tags request - tags are mutable - or an
+/// archive, whose metadata describes the archive file rather than the object path).
+
+std::shared_ptr<ObjectMetadata> lookupObjectMetadataCache(const String & cache_key)
+{
+    if (cache_key.empty())
+        return nullptr;
+    auto cached = ObjectMetadataCache::instance().get(cache_key);
+    ProfileEvents::increment(cached ? ProfileEvents::ObjectMetadataCacheHits : ProfileEvents::ObjectMetadataCacheMisses);
+    return cached;
+}
+
+void storeObjectMetadataCache(const String & cache_key, const ObjectMetadata & metadata)
+{
+    /// Only fully fetched metadata with a known size and a non-empty ETag can stand in for a real
+    /// fetch: downstream the size gates the filesystem cache stage and the ETag is part of its key.
+    if (cache_key.empty() || !metadata.is_fetched || !metadata.is_size_known || metadata.etag.empty())
+        return;
+    ObjectMetadataCache::instance().set(cache_key, std::make_shared<ObjectMetadata>(metadata));
+}
+
+void invalidateObjectMetadataCache(const String & cache_key)
+{
+    if (cache_key.empty())
+        return;
+    ObjectMetadataCache::instance().remove(cache_key);
+    ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheInvalidations);
+}
+
 }
 
 /// The object identifier already uses the full path, so files that share a base name in
@@ -447,6 +487,8 @@ std::shared_ptr<IObjectIterator> StorageObjectStorageSource::createFileIterator(
 
     std::unique_ptr<IObjectIterator> iterator;
     const auto & reading_path = configuration->getPathForRead();
+    const String metadata_cache_key_prefix
+        = query_settings.use_object_metadata_cache ? configuration->getDataSourceDescription() : String{};
     /// `KeysIterator` carries only path strings and drops `read_source_index`. For web URL shards the
     /// same relative path can come from different expanded URL options (e.g. `http://{h1,h2}/data/**`),
     /// so losing the source index would make `WebObjectStorage::readObject` treat all shards as failover
@@ -458,7 +500,7 @@ std::shared_ptr<IObjectIterator> StorageObjectStorageSource::createFileIterator(
         iterator = std::make_unique<KeysIterator>(
             paths, object_storage, virtual_columns, is_archive ? nullptr : read_keys,
             query_settings.ignore_non_existent_file, skip_object_metadata, with_tags,
-            file_progress_callback);
+            metadata_cache_key_prefix, file_progress_callback);
     }
     else if (reading_path.hasGlobs())
     {
@@ -513,6 +555,7 @@ std::shared_ptr<IObjectIterator> StorageObjectStorageSource::createFileIterator(
                 query_settings.ignore_non_existent_file,
                 skip_object_metadata,
                 with_tags,
+                metadata_cache_key_prefix,
                 file_progress_callback);
         }
     }
@@ -594,7 +637,7 @@ std::shared_ptr<IObjectIterator> StorageObjectStorageSource::createFileIterator(
         iterator = std::make_unique<KeysIterator>(
             paths, object_storage, virtual_columns, is_archive ? nullptr : read_keys,
             query_settings.ignore_non_existent_file, /*skip_object_metadata=*/false, with_tags,
-            file_progress_callback);
+            metadata_cache_key_prefix, file_progress_callback);
     }
 
     if (is_archive)
@@ -639,7 +682,24 @@ Chunk StorageObjectStorageSource::generate()
         }
 
         Chunk chunk;
-        if (reader->pull(chunk))
+        bool pulled = false;
+        try
+        {
+            pulled = reader->pull(chunk);
+        }
+        catch (...)
+        {
+            /// A failed read can mean the cached metadata no longer describes the object, for example
+            /// an in-place overwrite reported as `S3_OBJECT_CHANGED_DURING_READ` by
+            /// `s3_validate_etag_on_read`. Drop the entry so that the next query fetches the metadata
+            /// again; this query still fails.
+            if (object_metadata_cache_enabled)
+                invalidateObjectMetadataCache(
+                    getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
+            throw;
+        }
+
+        if (pulled)
         {
             UInt64 num_rows = chunk.getNumRows();
             total_rows_in_file += num_rows;
@@ -1031,17 +1091,28 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
             auto metadata_object = object_info->relative_path_with_metadata;
             metadata_object.relative_path = path;
 
-            if (query_settings.ignore_non_existent_file)
+            const String metadata_cache_key = (query_settings.use_object_metadata_cache && !with_tags && !object_info->isArchive())
+                ? getUniqueStoragePathIdentifier(*configuration, *object_info, /*include_connection_info=*/true)
+                : String{};
+
+            if (auto cached_metadata = lookupObjectMetadataCache(metadata_cache_key))
+            {
+                object_info->setObjectMetadata(*cached_metadata);
+            }
+            else if (query_settings.ignore_non_existent_file)
             {
                 auto metadata = object_storage->tryGetObjectMetadata(metadata_object, with_tags);
                 if (!metadata)
                     return {};
 
+                storeObjectMetadataCache(metadata_cache_key, *metadata);
                 object_info->setObjectMetadata(metadata.value());
             }
             else
             {
-                object_info->setObjectMetadata(object_storage->getObjectMetadata(metadata_object, with_tags));
+                auto metadata = object_storage->getObjectMetadata(metadata_object, with_tags);
+                storeObjectMetadataCache(metadata_cache_key, metadata);
+                object_info->setObjectMetadata(std::move(metadata));
             }
         }
 
@@ -2042,6 +2113,7 @@ StorageObjectStorageSource::KeysIterator::KeysIterator(
     bool ignore_non_existent_files_,
     bool skip_object_metadata_,
     bool with_tags_,
+    String metadata_cache_key_prefix_,
     std::function<void(FileProgress)> file_progress_callback_)
     : object_storage(object_storage_)
     , virtual_columns(virtual_columns_)
@@ -2050,6 +2122,7 @@ StorageObjectStorageSource::KeysIterator::KeysIterator(
     , ignore_non_existent_files(ignore_non_existent_files_)
     , skip_object_metadata(skip_object_metadata_)
     , with_tags(with_tags_)
+    , metadata_cache_key_prefix(with_tags_ ? String{} : std::move(metadata_cache_key_prefix_))
 {
     if (read_keys_)
     {
@@ -2075,15 +2148,26 @@ ObjectInfoPtr StorageObjectStorageSource::KeysIterator::next(size_t /* processor
         ObjectMetadata object_metadata{};
         if (!skip_object_metadata)
         {
-            if (ignore_non_existent_files)
+            const String metadata_cache_key
+                = metadata_cache_key_prefix.empty() ? String{} : joinPathUnderPrefix(metadata_cache_key_prefix, key);
+
+            if (auto cached_metadata = lookupObjectMetadataCache(metadata_cache_key))
+            {
+                object_metadata = *cached_metadata;
+            }
+            else if (ignore_non_existent_files)
             {
                 auto metadata = object_storage->tryGetObjectMetadata(key, with_tags);
                 if (!metadata)
                     continue;
+                storeObjectMetadataCache(metadata_cache_key, *metadata);
                 object_metadata = *metadata;
             }
             else
+            {
                 object_metadata = object_storage->getObjectMetadata(key, with_tags);
+                storeObjectMetadataCache(metadata_cache_key, object_metadata);
+            }
         }
         else
         {
