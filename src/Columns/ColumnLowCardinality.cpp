@@ -203,6 +203,17 @@ void ColumnLowCardinality::doInsertFrom(const IColumn & src, size_t n)
     {
         compactIfSharedDictionary();
         const auto & nested = *low_cardinality_src->getDictionary().getNestedColumn();
+
+        /// A merge assembles its output one row at a time, so this branch is entered once per output
+        /// row per LowCardinality column, always with the same pair of dictionaries. Translating
+        /// through the memo replaces the destination dictionary's hash probe with an array lookup;
+        /// see `doInsertRangeFrom`, which memoizes the same translations.
+        if (DictionaryTranslation * translation = findOrInstallTranslation(*low_cardinality_src))
+        {
+            idx.insertIndex(translateThroughMemo(*translation, getDictionary(), nested, position));
+            return;
+        }
+
         idx.insertIndex(getDictionary().uniqueInsertFrom(nested, position));
     }
 }
@@ -293,6 +304,18 @@ ColumnLowCardinality::DictionaryTranslation * ColumnLowCardinality::findOrInstal
     return &installed;
 }
 
+UInt64 ColumnLowCardinality::translateThroughMemo(
+    DictionaryTranslation & translation, IColumnUnique & dst_dictionary, const IColumn & src_nested, size_t position)
+{
+    chassert(position < translation.positions.size());
+    UInt64 & translated = translation.positions[position];
+    /// The same call the unmemoized branches make, so a NULL source position needs no special case:
+    /// `uniqueInsertFrom` maps it to the destination's null index, which is memoized like any other.
+    if (translated == UNTRANSLATED)
+        translated = dst_dictionary.uniqueInsertFrom(src_nested, position);
+    return translated;
+}
+
 #if !defined(DEBUG_OR_SANITIZER_BUILD)
 void ColumnLowCardinality::insertRangeFrom(const IColumn & src, size_t start, size_t length)
 #else
@@ -342,11 +365,7 @@ void ColumnLowCardinality::doInsertRangeFrom(const IColumn & src, size_t start, 
                 for (size_t i = 0; i < length; ++i)
                 {
                     const size_t position = low_cardinality_src->getIndexAt(start + i);
-                    chassert(position < translation->positions.size());
-                    UInt64 & translated = translation->positions[position];
-                    if (translated == UNTRANSLATED)
-                        translated = dst_dictionary.uniqueInsertFrom(src_nested, position);
-                    idx.insertIndex(translated);
+                    idx.insertIndex(translateThroughMemo(*translation, dst_dictionary, src_nested, position));
                 }
 
                 return;

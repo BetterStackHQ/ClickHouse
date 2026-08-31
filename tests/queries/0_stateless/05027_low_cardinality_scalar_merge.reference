@@ -1,0 +1,26 @@
+parts before	3
+parts after	1
+merged	1	NULL	z	16
+merged	1	[a]	x	73
+merged	2	[]	y	32
+merged	2	[b]	w	128
+merged	2	[c]	z	514
+merged	3	[e]	y	260
+merged	4	[]	y	1024
+merged	5	[d]	x	2048
+null vs empty	8	1	2	5
+many parts before	1
+many parts after	1
+many diff	0	0
+plain	NULL	5
+plain	NULL	8
+plain	NULL	10
+plain	[]	4
+plain	[]	7
+plain	[]	9
+plain	[a]	2
+plain	[a]	3
+plain	[a]	12
+plain	[b]	1
+plain	[b]	6
+plain	[c]	11

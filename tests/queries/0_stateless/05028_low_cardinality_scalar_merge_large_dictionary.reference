@@ -1,0 +1,18 @@
+parts before	2
+parts after	1
+rows	40004	40100	4	6
+overlap	0	NULL	10
+overlap	0	v0	1
+overlap	4000	v4000	11
+overlap	8000	v8000	11
+overlap	12000	NULL	10
+overlap	12000	v12000	1
+overlap	16000	v16000	11
+overlap	20000	v20000	11
+overlap	24000	NULL	10
+overlap	24000	v24000	1
+overlap	28000	v28000	11
+overlap	32000	v32000	11
+overlap	36000	NULL	10
+overlap	36000	v36000	1
+content	40000	40000
