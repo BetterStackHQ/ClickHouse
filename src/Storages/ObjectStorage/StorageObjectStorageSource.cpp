@@ -325,8 +325,10 @@ std::shared_ptr<ObjectMetadata> lookupObjectMetadataCache(const String & cache_k
 
 void storeObjectMetadataCache(const String & cache_key, const ObjectMetadata & metadata)
 {
-    /// Only fully fetched metadata with a known size and a non-empty ETag can stand in for a real
-    /// fetch: downstream the size gates the filesystem cache stage and the ETag is part of its key.
+    /// Only fully fetched metadata with a known size and an ETag can stand in for a real fetch:
+    /// downstream the size gates the filesystem cache stage and the ETag is part of its key. This
+    /// is the same admission test the filesystem cache applies to the ETag, so an object whose
+    /// metadata carries no content identifier (such as one from HDFS) is never remembered here.
     if (cache_key.empty() || !metadata.is_fetched || !metadata.is_size_known || metadata.etag.empty())
         return;
     ObjectMetadataCache::instance().set(cache_key, std::make_shared<ObjectMetadata>(metadata));
@@ -336,8 +338,8 @@ void invalidateObjectMetadataCache(const String & cache_key)
 {
     if (cache_key.empty())
         return;
-    ObjectMetadataCache::instance().remove(cache_key);
-    ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheInvalidations);
+    if (ObjectMetadataCache::instance().removeIfMatches(cache_key, [](const auto &) { return true; }))
+        ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheInvalidations);
 }
 
 }
@@ -388,8 +390,12 @@ std::shared_ptr<IObjectIterator> StorageObjectStorageSource::createFileIterator(
 
     std::unique_ptr<IObjectIterator> iterator;
     const auto & reading_path = configuration->getPathForRead();
-    const String metadata_cache_key_prefix
-        = query_settings.use_object_metadata_cache ? configuration->getDataSourceDescription() : String{};
+    /// Archives are excluded: the iterator would see the archive object, but the source reads (and,
+    /// on a read error, invalidates) members addressed as `archive::member`, so a cached archive
+    /// entry could never be invalidated.
+    const String metadata_cache_key_prefix = query_settings.use_object_metadata_cache && !is_archive
+        ? configuration->getDataSourceDescription()
+        : String{};
     /// `KeysIterator` carries only path strings and drops `read_source_index`. For web URL shards the
     /// same relative path can come from different expanded URL options (e.g. `http://{h1,h2}/data/**`),
     /// so losing the source index would make `WebObjectStorage::readObject` treat all shards as failover
@@ -591,10 +597,19 @@ Chunk StorageObjectStorageSource::generate()
             /// A failed read can mean the cached metadata no longer describes the object, for example
             /// an in-place overwrite reported as `S3_OBJECT_CHANGED_DURING_READ` by
             /// `s3_validate_etag_on_read`. Drop the entry so that the next query fetches the metadata
-            /// again; this query still fails.
+            /// again; this query still fails. Building the key must not replace the original error.
             if (object_metadata_cache_enabled)
-                invalidateObjectMetadataCache(
-                    getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
+            {
+                try
+                {
+                    invalidateObjectMetadataCache(
+                        getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
+                }
+                catch (...)
+                {
+                    tryLogCurrentException(log, "Failed to invalidate the object metadata cache entry");
+                }
+            }
             throw;
         }
 
@@ -866,7 +881,8 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
         max_block_size,
         parser_shared_resources,
         format_filter_info,
-        need_only_count);
+        need_only_count,
+        /*allow_object_metadata_cache=*/true);
 }
 
 StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReader(
@@ -883,7 +899,8 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
     size_t max_block_size,
     FormatParserSharedResourcesPtr parser_shared_resources,
     FormatFilterInfoPtr format_filter_info,
-    bool need_only_count)
+    bool need_only_count,
+    bool allow_object_metadata_cache)
 {
     ObjectInfoPtr object_info;
     auto query_settings = configuration->getQuerySettings(context_);
@@ -905,7 +922,8 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
             auto metadata_object = object_info->relative_path_with_metadata;
             metadata_object.relative_path = path;
 
-            const String metadata_cache_key = (query_settings.use_object_metadata_cache && !with_tags && !object_info->isArchive())
+            const String metadata_cache_key
+                = (allow_object_metadata_cache && query_settings.use_object_metadata_cache && !with_tags && !object_info->isArchive())
                 ? getUniqueStoragePathIdentifier(*configuration, *object_info, /*include_connection_info=*/true)
                 : String{};
 
@@ -1847,8 +1865,11 @@ ObjectInfoPtr StorageObjectStorageSource::KeysIterator::next(size_t /* processor
         ObjectMetadata object_metadata{};
         if (!skip_object_metadata)
         {
-            const String metadata_cache_key
-                = metadata_cache_key_prefix.empty() ? String{} : makeObjectMetadataCacheKey(metadata_cache_key_prefix, key);
+            /// Metadata-only iterations (e.g. `getPathSample`) neither read objects nor report
+            /// progress, so they must not consult, fill or account the cache either.
+            const String metadata_cache_key = (metadata_cache_key_prefix.empty() || !emit_profile_events)
+                ? String{}
+                : makeObjectMetadataCacheKey(metadata_cache_key_prefix, key);
 
             if (auto cached_metadata = lookupObjectMetadataCache(metadata_cache_key))
             {

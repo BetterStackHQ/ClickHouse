@@ -1,0 +1,4 @@
+cold read, metadata cache off	0	1	1
+warm read, metadata cache off	1	0	1
+warm read, metadata cache miss	1	0	1
+warm read, metadata cache hit	1	0	0

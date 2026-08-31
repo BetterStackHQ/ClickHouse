@@ -8,7 +8,10 @@ CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$CUR_DIR"/../shell_config.sh
 
 auth="'test', 'testtest'"
-prefix="http://localhost:11111/test/${CLICKHOUSE_TEST_UNIQUE_NAME}"
+# The object metadata cache outlives the query and the database, so a rerun against the same
+# database must not reuse the objects, nor the query ids the events are looked up by.
+run_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_$$"
+prefix="http://localhost:11111/test/$run_id"
 
 # Report how the query with the given id obtained the object metadata: whether it issued a HEAD
 # request, and whether it hit or missed the object metadata cache.
@@ -30,39 +33,39 @@ report()
 hit="$prefix/hit.csv"
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$hit', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(10) SETTINGS s3_truncate_on_insert = 1"
 
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_hit_1" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_hit_1" -q \
     "SELECT sum(n) FROM s3('$hit', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, log_queries = 1"
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_hit_2" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_hit_2" -q \
     "SELECT sum(n) FROM s3('$hit', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, log_queries = 1"
 
 # With the setting at its default the cache is neither consulted nor filled, and both reads HEAD.
 off="$prefix/off.csv"
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$off', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(10) SETTINGS s3_truncate_on_insert = 1"
 
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_off_1" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_off_1" -q \
     "SELECT sum(n) FROM s3('$off', $auth, 'CSV', 'n UInt64') SETTINGS log_queries = 1"
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_off_2" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_off_2" -q \
     "SELECT sum(n) FROM s3('$off', $auth, 'CSV', 'n UInt64') SETTINGS log_queries = 1"
 
 ${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS query_log"
-report 'cache on, first read' "${CLICKHOUSE_TEST_UNIQUE_NAME}_hit_1"
-report 'cache on, second read' "${CLICKHOUSE_TEST_UNIQUE_NAME}_hit_2"
-report 'cache off, first read' "${CLICKHOUSE_TEST_UNIQUE_NAME}_off_1"
-report 'cache off, second read' "${CLICKHOUSE_TEST_UNIQUE_NAME}_off_2"
+report 'cache on, first read' "${run_id}_hit_1"
+report 'cache on, second read' "${run_id}_hit_2"
+report 'cache off, first read' "${run_id}_off_1"
+report 'cache off, second read' "${run_id}_off_2"
 
-# An object overwritten in place breaks the immutability contract of the setting. The read must
-# fail loudly rather than return data stitched together from two generations, and the stale entry
-# must be dropped so that the next query sees the new object.
+# An object overwritten in place breaks the immutability contract of the setting. A read that
+# reaches S3 must fail loudly rather than return data stitched together from two generations, and
+# the stale entry must be dropped so that the next query sees the new object.
 overwritten="$prefix/overwritten.csv"
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$overwritten', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(10) SETTINGS s3_truncate_on_insert = 1"
 ${CLICKHOUSE_CLIENT} -q "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1"
 
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$overwritten', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(200) SETTINGS s3_truncate_on_insert = 1"
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_stale" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_stale" -q \
     "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, s3_validate_etag_on_read = 1, log_queries = 1" 2>&1 \
     | grep -oF "S3_OBJECT_CHANGED_DURING_READ" | head -n 1
 
-${CLICKHOUSE_CLIENT} --query_id="${CLICKHOUSE_TEST_UNIQUE_NAME}_overwritten" -q \
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_overwritten" -q \
     "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, log_queries = 1"
 
 # The absence of an object is never cached: a key that appears after a failed read is readable.
@@ -80,7 +83,7 @@ ${CLICKHOUSE_CLIENT} -q "
         'stale read invalidated the entry',
         ProfileEvents['ObjectMetadataCacheInvalidations'] > 0
     FROM system.query_log
-    WHERE current_database = currentDatabase() AND query_id = '${CLICKHOUSE_TEST_UNIQUE_NAME}_stale'
+    WHERE current_database = currentDatabase() AND query_id = '${run_id}_stale'
         AND type = 'ExceptionWhileProcessing' AND event_date >= yesterday()
     ORDER BY event_time_microseconds DESC LIMIT 1"
-report 'read after overwrite' "${CLICKHOUSE_TEST_UNIQUE_NAME}_overwritten"
+report 'read after overwrite' "${run_id}_overwritten"
