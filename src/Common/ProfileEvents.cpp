@@ -1041,6 +1041,7 @@ The server successfully detected this situation and will download merged part fr
     M(ObjectMetadataCacheHits, "Number of times object storage metadata was served from the object metadata cache instead of a metadata request", ValueType::Number) \
     M(ObjectMetadataCacheMisses, "Number of times object storage metadata was not found in the object metadata cache and a metadata request was issued", ValueType::Number) \
     M(ObjectMetadataCacheInvalidations, "Number of times an object metadata cache entry was invalidated after a read error on the object", ValueType::Number) \
+    M(ObjectMetadataCacheRewriteRecovered, "Number of times a read found the object rewritten under its cached metadata and recovered by re-reading it with the current metadata. Every occurrence is a violation of the immutability the cache is enabled under", ValueType::Number) \
     \
     M(KeeperPacketsSent, "Packets sent by keeper server", ValueType::Number) \
     M(KeeperPacketsReceived, "Packets received by keeper server", ValueType::Number) \

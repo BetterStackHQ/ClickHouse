@@ -53,17 +53,16 @@ report 'cache on, second read' "${run_id}_hit_2"
 report 'cache off, first read' "${run_id}_off_1"
 report 'cache off, second read' "${run_id}_off_2"
 
-# An object overwritten in place breaks the immutability contract of the setting. A read that
-# reaches S3 must fail loudly rather than return data stitched together from two generations, and
-# the stale entry must be dropped so that the next query sees the new object.
+# An object overwritten in place breaks the immutability contract of the setting. The read must
+# never return data stitched together from two generations: having emitted nothing yet, it drops
+# the stale entry and reads the object again under its current metadata.
 overwritten="$prefix/overwritten.csv"
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$overwritten', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(10) SETTINGS s3_truncate_on_insert = 1"
 ${CLICKHOUSE_CLIENT} -q "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1"
 
 ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$overwritten', $auth, 'CSV', 'n UInt64') SELECT number FROM numbers(200) SETTINGS s3_truncate_on_insert = 1"
-${CLICKHOUSE_CLIENT} --query_id="${run_id}_stale" -q \
-    "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, s3_validate_etag_on_read = 1, log_queries = 1" 2>&1 \
-    | grep -oF "S3_OBJECT_CHANGED_DURING_READ" | head -n 1
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_recovered" -q \
+    "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, s3_validate_etag_on_read = 1, log_queries = 1"
 
 ${CLICKHOUSE_CLIENT} --query_id="${run_id}_overwritten" -q \
     "SELECT sum(n) FROM s3('$overwritten', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1, log_queries = 1"
@@ -77,13 +76,15 @@ ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$appearing', $auth, 'CSV', 'n 
 ${CLICKHOUSE_CLIENT} -q "SELECT sum(n) FROM s3('$appearing', $auth, 'CSV', 'n UInt64') SETTINGS use_object_metadata_cache = 1"
 
 ${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS query_log"
-# The failed read must have dropped the stale entry, and the read after it must therefore be a miss.
+# The recovering read drops the stale entry and remembers what it found instead, so it is counted
+# as a recovery - the violation stays visible - and the read after it needs no request of its own.
 ${CLICKHOUSE_CLIENT} -q "
     SELECT
-        'stale read invalidated the entry',
-        ProfileEvents['ObjectMetadataCacheInvalidations'] > 0
+        'overwrite recovered',
+        ProfileEvents['ObjectMetadataCacheInvalidations'] > 0,
+        ProfileEvents['ObjectMetadataCacheRewriteRecovered'] > 0
     FROM system.query_log
-    WHERE current_database = currentDatabase() AND query_id = '${run_id}_stale'
-        AND type = 'ExceptionWhileProcessing' AND event_date >= yesterday()
+    WHERE current_database = currentDatabase() AND query_id = '${run_id}_recovered'
+        AND type = 'QueryFinish' AND event_date >= yesterday()
     ORDER BY event_time_microseconds DESC LIMIT 1"
 report 'read after overwrite' "${run_id}_overwritten"

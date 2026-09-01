@@ -86,6 +86,7 @@ namespace ProfileEvents
     extern const Event ObjectMetadataCacheHits;
     extern const Event ObjectMetadataCacheMisses;
     extern const Event ObjectMetadataCacheInvalidations;
+    extern const Event ObjectMetadataCacheRewriteRecovered;
 }
 
 namespace CurrentMetrics
@@ -344,20 +345,36 @@ void invalidateObjectMetadataCache(const String & cache_key)
         ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheInvalidations);
 }
 
-/// Whether the exception being handled can mean that the object being read is no longer there.
-/// Matched on the error code only. The message is out of the question - it differs between storages
-/// and between the requests that run into the absence - and so is the exception type: the pipeline
-/// hands an exception between processors by value, which slices an `S3Exception` down to the error
-/// code every S3 failure shares. The match is therefore wide, and deliberately so: it decides which
-/// failures are worth a metadata request, and that request, not this, establishes the absence.
-bool mayReportMissingObject()
+/// Whether the exception being handled can mean that the cached metadata no longer describes the
+/// object: it may have been deleted, or rewritten in place. Matched on the error code only. The
+/// message is out of the question - it differs between storages and between the requests that run
+/// into the absence - and so is the exception type: the pipeline hands an exception between
+/// processors by value, which slices an `S3Exception` down to the error code every S3 failure
+/// shares. The match is therefore wide, and deliberately so: it decides which failures are worth a
+/// metadata request, and that request, not this, establishes what became of the object.
+bool mayMeanStaleCachedMetadata()
 {
     const auto code = getCurrentExceptionCode();
-    /// The `If-Match` of `s3_validate_etag_on_read` makes a store that evaluates the condition
-    /// before reporting the missing key answer a read of a deleted object with a failed precondition.
+    /// `S3_OBJECT_CHANGED_DURING_READ` covers both an object rewritten in place and, on a store
+    /// that evaluates the `If-Match` of `s3_validate_etag_on_read` before reporting the missing
+    /// key, a read of a deleted object.
     return code == ErrorCodes::S3_ERROR || code == ErrorCodes::FILE_DOESNT_EXIST
         || code == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
 }
+
+/// Yields one object and then ends. Lets a reader be rebuilt for a file that is already in hand,
+/// without taking the next one from the iterator the source is reading through.
+class SingleObjectIterator : public IObjectIterator
+{
+public:
+    explicit SingleObjectIterator(ObjectInfoPtr object_) : object(std::move(object_)) { }
+
+    ObjectInfoPtr next(size_t) override { return std::exchange(object, nullptr); }
+    size_t estimatedKeysCount() override { return 1; }
+
+private:
+    ObjectInfoPtr object;
+};
 
 }
 
@@ -612,35 +629,47 @@ Chunk StorageObjectStorageSource::generate()
         catch (...)
         {
             /// A failed read can mean the cached metadata no longer describes the object, for example
-            /// an in-place overwrite reported as `S3_OBJECT_CHANGED_DURING_READ` by
-            /// `s3_validate_etag_on_read`, or a deleted object. Drop the entry so that the next query
-            /// fetches the metadata again. Building the key must not replace the original error.
+            /// an in-place overwrite reported as `S3_OBJECT_CHANGED_DURING_READ`, or a deleted
+            /// object. Drop the entry so that the next query fetches the metadata again. Building
+            /// the key must not replace the original error.
             if (!object_metadata_cache_enabled)
                 throw;
 
+            String metadata_cache_key;
             try
             {
-                invalidateObjectMetadataCache(
-                    getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
+                metadata_cache_key
+                    = getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true);
+                invalidateObjectMetadataCache(metadata_cache_key);
             }
             catch (...)
             {
+                metadata_cache_key.clear();
                 tryLogCurrentException(log, "Failed to invalidate the object metadata cache entry");
             }
 
-            /// When the object may be gone and nothing of it has been read yet, the cache entry stood
-            /// in for a metadata request that would have found nothing before the file was ever
-            /// opened, and a query that ignores non-existent files would have skipped the file. Skip
-            /// it here too, so that the cache does not decide whether a deleted object is tolerated.
-            /// A file that has already produced rows is past the point of being skipped, and so is
-            /// every failure the query does not ignore: those keep the error the read got.
-            if (!reader.getObjectInfo()->metadata_from_cache || total_rows_in_file != 0 || !mayReportMissingObject()
-                || !skipMissingObjectAfterCacheHit(*reader.getObjectInfo()))
+            /// A file that has already produced rows is past both remedies below: resuming or
+            /// restarting it would join rows of two generations, which is the torn read the whole
+            /// guard exists to prevent. Such a read keeps the error it got, as does any failure that
+            /// cannot mean the metadata was stale.
+            if (!reader.getObjectInfo()->metadata_from_cache || total_rows_in_file != 0 || !mayMeanStaleCachedMetadata())
                 throw;
 
-            if (!moveToNextFile())
-                break;
-            continue;
+            /// Hold the file across the reader being replaced below.
+            auto object_info = reader.getObjectInfo();
+            switch (resolveStaleCachedMetadata(*object_info, metadata_cache_key))
+            {
+                case StaleMetadataOutcome::ReportReadError:
+                    throw;
+                case StaleMetadataOutcome::SkipFile:
+                    if (!moveToNextFile())
+                        return {};
+                    continue;
+                case StaleMetadataOutcome::RereadFile:
+                    if (restartCurrentFile(object_info) || moveToNextFile())
+                        continue;
+                    return {};
+            }
         }
 
         if (pulled)
@@ -892,7 +921,8 @@ bool StorageObjectStorageSource::moveToNextFile()
     return true;
 }
 
-bool StorageObjectStorageSource::skipMissingObjectAfterCacheHit(const ObjectInfo & object_info)
+StorageObjectStorageSource::StaleMetadataOutcome
+StorageObjectStorageSource::resolveStaleCachedMetadata(ObjectInfo & object_info, const String & metadata_cache_key)
 {
     /// Entries are never cached for an archive, whose members are read under a different path than
     /// the one the metadata describes.
@@ -904,9 +934,8 @@ bool StorageObjectStorageSource::skipMissingObjectAfterCacheHit(const ObjectInfo
 
     /// Metadata is never cached for a request that asks for tags either, so this is the very
     /// request the read would have started from had the entry not been there - and it carries no
-    /// `If-Match`, so it answers what the read could not: an object that is still there was
-    /// overwritten rather than deleted, which is not something to skip over. (An overwritten
-    /// object's fresh metadata is also what re-reading the file would need.)
+    /// `If-Match`, so it answers what the read could not: whether the object is gone, or still
+    /// there under a different generation.
     auto metadata_object = object_info.relative_path_with_metadata;
     metadata_object.relative_path = object_info.getPath();
 
@@ -917,26 +946,96 @@ bool StorageObjectStorageSource::skipMissingObjectAfterCacheHit(const ObjectInfo
     }
     catch (...)
     {
-        /// The request itself failed, so it establishes nothing: whether the object is there is
-        /// still unknown, and a file must not be skipped, nor an error replaced, on a guess. Report
-        /// the read error, which is what a query without this cache would have reported too.
+        /// The request itself failed, so it establishes nothing: what became of the object is still
+        /// unknown, and a file must not be skipped, nor re-read, nor an error replaced, on a guess.
+        /// Report the read error, which is what a query without this cache would have reported too.
         tryLogCurrentException(log, "Failed to fetch the metadata of an object whose read failed");
-        return false;
+        return StaleMetadataOutcome::ReportReadError;
     }
 
-    if (metadata.has_value())
+    if (!metadata.has_value())
+    {
+        /// The object is gone. The cache entry stood in for a metadata request that would have
+        /// found nothing before the file was ever opened, and a query that ignores non-existent
+        /// files would have skipped the file, so skip it here too - the cache does not get to
+        /// decide whether a deleted object is tolerated.
+        if (configuration->getQuerySettings(read_context).ignore_non_existent_file)
+            return StaleMetadataOutcome::SkipFile;
+
+        /// A store that evaluates the read's condition against the object it no longer has reports
+        /// a changed object, which is not what happened, so let the request that established the
+        /// absence report it instead.
+        if (read_reported_a_changed_object)
+            object_storage->getObjectMetadata(metadata_object, /*with_tags=*/false);
+
+        return StaleMetadataOutcome::ReportReadError;
+    }
+
+    /// The object is still there. Unless it is a different object than the entry described, the
+    /// read failed for a reason of its own and keeps its error.
+    const auto cached_metadata = object_info.getObjectMetadata();
+    if (!cached_metadata.has_value()
+        || (metadata->etag == cached_metadata->etag && metadata->size_bytes == cached_metadata->size_bytes))
+        return StaleMetadataOutcome::ReportReadError;
+
+    /// It was overwritten in place, which the setting's contract says never happens. The read has
+    /// emitted nothing, so re-reading it under the current metadata returns the object as it is now
+    /// rather than a mixture of two generations - but the violation itself must stay visible.
+    LOG_WARNING(
+        log,
+        "Object {} was overwritten in place while its metadata was cached (etag {} -> {}, size {} -> {}); "
+        "re-reading it with the current metadata. `use_object_metadata_cache` is only sound for objects "
+        "that are never overwritten",
+        object_info.getPath(),
+        cached_metadata->etag,
+        metadata->etag,
+        cached_metadata->size_bytes,
+        metadata->size_bytes);
+    ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheRewriteRecovered);
+
+    storeObjectMetadataCache(metadata_cache_key, *metadata);
+    object_info.setObjectMetadata(*metadata);
+    /// The metadata is now this request's, not the cache's. That is what bounds the recovery to one
+    /// attempt per file: should the re-read fail too, none of this applies to it and it reports the
+    /// error, which is the right answer for an object that is being rewritten continuously.
+    object_info.metadata_from_cache = false;
+    return StaleMetadataOutcome::RereadFile;
+}
+
+bool StorageObjectStorageSource::restartCurrentFile(const ObjectInfoPtr & object_info)
+{
+    /// The file is already in hand and its metadata has just been refreshed, so the reader is
+    /// rebuilt from it directly. The iterator the source reads through is left alone: the next
+    /// file is already being prepared in `reader_future`, and consuming it here would drop the file
+    /// this read is about to repeat.
+    auto restarted_reader = createReader(
+        0,
+        storage_id,
+        std::make_shared<SingleObjectIterator>(object_info),
+        configuration,
+        object_storage,
+        read_from_format_info,
+        format_settings,
+        read_context,
+        &schema_cache,
+        log,
+        max_block_size,
+        parser_shared_resources,
+        format_filter_info,
+        need_only_count,
+        /*allow_object_metadata_cache=*/false);
+
+    /// The object as it is now has nothing left to read - it was rewritten empty and the query
+    /// skips empty files. The source moves on instead.
+    if (!restarted_reader)
         return false;
 
-    if (configuration->getQuerySettings(read_context).ignore_non_existent_file)
-        return true;
-
-    /// The object is gone. A store that evaluates the read's condition against the object it no
-    /// longer has reports a changed object, which is not what happened, so let the request that
-    /// established the absence report it instead.
-    if (read_reported_a_changed_object)
-        object_storage->getObjectMetadata(metadata_object, /*with_tags=*/false);
-
-    return false;
+    reader = std::move(restarted_reader);
+    /// The same per-file state a move to the next file resets: the file is being read from its
+    /// start again, so nothing counted or registered for the abandoned attempt carries over.
+    total_rows_in_file = 0;
+    current_file_index.reset();
+    return true;
 }
 
 void StorageObjectStorageSource::addNumRowsToCache(const ObjectInfo & object_info, size_t num_rows)
@@ -1155,7 +1254,8 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
             ProfileEvents::increment(ProfileEvents::ObjectStorageReadObjects);
             compression_method = chooseCompressionMethod(object_info->getFileName(), configuration->compression_method);
             read_buf = createReadBuffer(
-                object_info->relative_path_with_metadata, object_storage, context_, log, std::nullopt, !headers_requested);
+                object_info->relative_path_with_metadata, object_storage, context_, log, std::nullopt, !headers_requested,
+                object_info->metadata_from_cache);
         }
 
         Block initial_header = read_from_format_info.format_header;
@@ -1485,7 +1585,8 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
     const ContextPtr & context_,
     const LoggerPtr & log,
     const std::optional<ReadSettings> & read_settings,
-    bool allow_page_cache)
+    bool allow_page_cache,
+    bool metadata_from_cache)
 {
     const auto & settings = context_->getSettingsRef();
     const auto & effective_read_settings = read_settings.has_value() ? read_settings.value() : context_->getReadSettings();
@@ -1601,9 +1702,20 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
 
     /// Pin the read to the object generation seen here (etag from the LIST/HEAD): a GET with a
     /// different ETag means an in-place overwrite, reported as S3_OBJECT_CHANGED_DURING_READ
-    /// instead of torn cross-generation data.
-    if (settings[Setting::s3_validate_etag_on_read] && object_info.metadata.has_value())
+    /// instead of torn cross-generation data. Metadata that was remembered rather than fetched
+    /// names a generation that may already be gone, and with the pin off nothing else would notice:
+    /// no failed precondition, and a shorter object read to its end like any other file. Such a
+    /// read therefore hands the reader the generation to check every response against, pin or no
+    /// pin - the pin only decides whether the store is asked to reject the read up front. The size
+    /// is checked only there as well: a read that fetched the metadata itself a moment ago is
+    /// describing the object it is opening, and is left exactly as it was.
+    const bool pin_etag = settings[Setting::s3_validate_etag_on_read];
+    if ((pin_etag || metadata_from_cache) && object_info.metadata.has_value())
+    {
         stored_object.etag = object_info.metadata->etag;
+        stored_object.pin_etag = pin_etag;
+        stored_object.verify_size = metadata_from_cache && is_size_known;
+    }
     pipeline.setSource(object_storage, StoredObjects{stored_object}, modified_read_settings);
 
     /// Filesystem cache
