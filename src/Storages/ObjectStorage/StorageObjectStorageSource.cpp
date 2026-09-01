@@ -20,6 +20,8 @@
 #include <IO/EmptyReadBuffer.h>
 #include <IO/ReadBufferFromFileBase.h>
 #include <IO/ReadWriteBufferFromHTTP.h>
+#include <IO/S3Common.h>
+#include <IO/S3/getObjectInfo.h>
 #include <Disks/IO/ReadBufferFromWebServer.h>
 #include <IO/ReadPipeline.h>
 #include <IO/CachedInMemoryReadBufferFromFile.h>
@@ -104,6 +106,7 @@ namespace ErrorCodes
     extern const int CANNOT_UNPACK_ARCHIVE;
     extern const int LOGICAL_ERROR;
     extern const int FILE_DOESNT_EXIST;
+    extern const int S3_OBJECT_CHANGED_DURING_READ;
 }
 
 namespace
@@ -340,6 +343,26 @@ void invalidateObjectMetadataCache(const String & cache_key)
         return;
     if (ObjectMetadataCache::instance().removeIfMatches(cache_key, [](const auto &) { return true; }))
         ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheInvalidations);
+}
+
+/// Whether the exception being handled can mean that the object being read is no longer there.
+/// Matched on the error code, never on the message, which differs between storages and between the
+/// requests that run into the absence. The match is deliberately wide - a store answers a
+/// conditional read of a deleted object with a failed precondition rather than with a missing key -
+/// because the absence is confirmed by a metadata request afterwards anyway.
+bool mayReportMissingObject()
+{
+#if USE_AWS_S3
+    /// A `GET` of a deleted key fails with `NoSuchKey`, which `ReadBufferFromS3` reports as an
+    /// `S3Exception` (error code `S3_ERROR`, shared with every other S3 failure) carrying the
+    /// original S3 error type.
+    if (const auto * s3_exception = current_exception_cast<const S3Exception *>())
+        return S3::isNotFoundError(s3_exception->getS3ErrorCode());
+#endif
+    const auto code = getCurrentExceptionCode();
+    /// The `If-Match` of `s3_validate_etag_on_read` turns that same `GET` into a failed
+    /// precondition on stores that evaluate the condition before reporting the missing key.
+    return code == ErrorCodes::FILE_DOESNT_EXIST || code == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
 }
 
 }
@@ -596,21 +619,34 @@ Chunk StorageObjectStorageSource::generate()
         {
             /// A failed read can mean the cached metadata no longer describes the object, for example
             /// an in-place overwrite reported as `S3_OBJECT_CHANGED_DURING_READ` by
-            /// `s3_validate_etag_on_read`. Drop the entry so that the next query fetches the metadata
-            /// again; this query still fails. Building the key must not replace the original error.
-            if (object_metadata_cache_enabled)
+            /// `s3_validate_etag_on_read`, or a deleted object. Drop the entry so that the next query
+            /// fetches the metadata again. Building the key must not replace the original error.
+            if (!object_metadata_cache_enabled)
+                throw;
+
+            try
             {
-                try
-                {
-                    invalidateObjectMetadataCache(
-                        getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
-                }
-                catch (...)
-                {
-                    tryLogCurrentException(log, "Failed to invalidate the object metadata cache entry");
-                }
+                invalidateObjectMetadataCache(
+                    getUniqueStoragePathIdentifier(*configuration, *reader.getObjectInfo(), /*include_connection_info=*/true));
             }
-            throw;
+            catch (...)
+            {
+                tryLogCurrentException(log, "Failed to invalidate the object metadata cache entry");
+            }
+
+            /// When the object may be gone and nothing of it has been read yet, the cache entry stood
+            /// in for a metadata request that would have found nothing before the file was ever
+            /// opened, and a query that ignores non-existent files would have skipped the file. Skip
+            /// it here too, so that the cache does not decide whether a deleted object is tolerated.
+            /// A file that has already produced rows is past the point of being skipped, and so is
+            /// every failure the query does not ignore: those keep the error the read got.
+            if (!reader.getObjectInfo()->metadata_from_cache || total_rows_in_file != 0 || !mayReportMissingObject()
+                || !skipMissingObjectAfterCacheHit(*reader.getObjectInfo()))
+                throw;
+
+            if (!moveToNextFile())
+                break;
+            continue;
         }
 
         if (pulled)
@@ -836,23 +872,58 @@ Chunk StorageObjectStorageSource::generate()
             && !format_filter_info->filter_actions_dag)
             addNumRowsToCache(*reader.getObjectInfo(), total_rows_in_file);
 
-        total_rows_in_file = 0;
-
-        chassert(reader_future.valid());
-        reader = reader_future.get();
-
-        if (!reader)
+        if (!moveToNextFile())
             break;
-
-        ++total_files_read;
-
-        /// Even if task is finished the thread may be not freed in pool.
-        /// So wait until it will be freed before scheduling a new task.
-        create_reader_pool->wait();
-        reader_future = createReaderAsync();
     }
 
     return {};
+}
+
+bool StorageObjectStorageSource::moveToNextFile()
+{
+    total_rows_in_file = 0;
+
+    chassert(reader_future.valid());
+    reader = reader_future.get();
+
+    if (!reader)
+        return false;
+
+    ++total_files_read;
+
+    /// Even if task is finished the thread may be not freed in pool.
+    /// So wait until it will be freed before scheduling a new task.
+    create_reader_pool->wait();
+    reader_future = createReaderAsync();
+    return true;
+}
+
+bool StorageObjectStorageSource::skipMissingObjectAfterCacheHit(const ObjectInfo & object_info)
+{
+    /// Called while the read error is being handled, and reports it unless it turns out to describe
+    /// the wrong thing.
+    const bool read_reported_a_changed_object = getCurrentExceptionCode() == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
+
+    /// Metadata is never cached for a request that asks for tags, nor for an archive, so this is
+    /// the very request the read would have started from had the entry not been there - and it
+    /// carries no `If-Match`, so it answers what the read could not: an object that is still there
+    /// was overwritten rather than deleted, which is not something to skip over. (An overwritten
+    /// object's fresh metadata is also what re-reading the file would need.)
+    auto metadata_object = object_info.relative_path_with_metadata;
+    metadata_object.relative_path = object_info.getPath();
+    if (object_storage->tryGetObjectMetadata(metadata_object, /*with_tags=*/false).has_value())
+        return false;
+
+    if (configuration->getQuerySettings(read_context).ignore_non_existent_file)
+        return true;
+
+    /// The object is gone. A store that evaluates the read's condition against the object it no
+    /// longer has reports a changed object, which is not what happened, so let the request that
+    /// established the absence report it instead.
+    if (read_reported_a_changed_object)
+        object_storage->getObjectMetadata(metadata_object, /*with_tags=*/false);
+
+    return false;
 }
 
 void StorageObjectStorageSource::addNumRowsToCache(const ObjectInfo & object_info, size_t num_rows)
@@ -930,6 +1001,7 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
             if (auto cached_metadata = lookupObjectMetadataCache(metadata_cache_key))
             {
                 object_info->setObjectMetadata(*cached_metadata);
+                object_info->metadata_from_cache = true;
             }
             else if (query_settings.ignore_non_existent_file)
             {
@@ -1863,6 +1935,7 @@ ObjectInfoPtr StorageObjectStorageSource::KeysIterator::next(size_t /* processor
         auto key = keys[current_index];
 
         ObjectMetadata object_metadata{};
+        bool metadata_from_cache = false;
         if (!skip_object_metadata)
         {
             /// Metadata-only iterations (e.g. `getPathSample`) neither read objects nor report
@@ -1874,6 +1947,7 @@ ObjectInfoPtr StorageObjectStorageSource::KeysIterator::next(size_t /* processor
             if (auto cached_metadata = lookupObjectMetadataCache(metadata_cache_key))
             {
                 object_metadata = *cached_metadata;
+                metadata_from_cache = true;
             }
             else if (ignore_non_existent_files)
             {
@@ -1900,7 +1974,9 @@ ObjectInfoPtr StorageObjectStorageSource::KeysIterator::next(size_t /* processor
         if (emit_profile_events)
             ProfileEvents::increment(ProfileEvents::ObjectStorageListedObjects);
 
-        return std::make_shared<ObjectInfo>(RelativePathWithMetadata(key, object_metadata));
+        auto object_info = std::make_shared<ObjectInfo>(RelativePathWithMetadata(key, object_metadata));
+        object_info->metadata_from_cache = metadata_from_cache;
+        return object_info;
     }
 }
 
