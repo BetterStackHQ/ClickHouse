@@ -20,6 +20,7 @@
 #include <Common/CurrentThread.h>
 #include <base/sleep.h>
 
+#include <charconv>
 #include <cstdint>
 #include <utility>
 
@@ -70,6 +71,36 @@ namespace ErrorCodes
 namespace
 {
 
+/// The size of the whole object as the GET response reports it: the total after the slash of
+/// `Content-Range` when a range was requested, `Content-Length` otherwise. Reported as unknown -
+/// never as a mismatch - whenever the response does not say: a store may answer a ranged request
+/// without a `Content-Range`, or give `*` as the total, and a read must not fail over a header
+/// a store is not obliged to send.
+std::optional<size_t> getTotalObjectSizeFromResponse(const Aws::S3::Model::GetObjectResult & result, bool range_requested)
+{
+    if (!range_requested)
+    {
+        const auto content_length = result.GetContentLength();
+        if (content_length < 0)
+            return std::nullopt;
+        return static_cast<size_t>(content_length);
+    }
+
+    /// `bytes <first>-<last>/<total>`, where the total is `*` when the store does not know it.
+    const auto & content_range = result.GetContentRange();
+    const auto slash = content_range.rfind('/');
+    if (slash == std::string::npos)
+        return std::nullopt;
+
+    const auto * begin = content_range.data() + slash + 1;
+    const auto * end = content_range.data() + content_range.size();
+    size_t total = 0;
+    const auto parsed = std::from_chars(begin, end, total);
+    if (parsed.ec != std::errc{} || parsed.ptr != end)
+        return std::nullopt;
+    return total;
+}
+
 /// Diagnostic predicate for the bounds-corruption class of bug tracked in
 /// `https://github.com/ClickHouse/ClickHouse/issues/104692`. Validates that
 /// `inner` is fully contained in `outer` WITHOUT touching `Buffer::size` or
@@ -105,13 +136,17 @@ ReadBufferFromS3::ReadBufferFromS3(
     std::optional<size_t> file_size_,
     const S3CredentialsRefreshCallback & credentials_refresh_callback_,
     BlobStorageLogWriterPtr blob_storage_log_,
-    const String & expected_etag_)
+    const String & expected_etag_,
+    std::optional<size_t> expected_total_size_,
+    bool pin_expected_etag_)
     : ReadBufferFromFileBase()
     , client_ptr(std::move(client_ptr_))
     , bucket(bucket_)
     , key(key_)
     , version_id(version_id_)
     , expected_etag(expected_etag_)
+    , expected_total_size(expected_total_size_)
+    , pin_expected_etag(pin_expected_etag_)
     , request_settings(request_settings_)
     , offset(offset_)
     , read_until_position(read_until_position_)
@@ -563,7 +598,7 @@ Aws::S3::Model::GetObjectResult ReadBufferFromS3::sendRequest(size_t attempt, si
     /// Pin the GET to the generation seen at read setup via If-Match, so an in-place overwrite is
     /// rejected with 412 instead of transferring torn cross-generation bytes. Only for non-versioned
     /// reads with a known expected_etag.
-    else if (!expected_etag.empty())
+    else if (pin_expected_etag && !expected_etag.empty())
         req.SetIfMatch(expected_etag);
 
     S3::setClickHouseAttemptNumber(req, attempt);
@@ -628,6 +663,23 @@ Aws::S3::Model::GetObjectResult ReadBufferFromS3::sendRequest(size_t attempt, si
                 "retry the query, or set s3_validate_etag_on_read=0 to disable this check",
                 bucket, key, expected_etag, response_etag);
 
+        /// The ETag does not close the gap on its own: a store may answer without one, and where
+        /// the read is not pinned there is no failed precondition either, so an object rewritten
+        /// shorter would be served in full and read as a file that simply ends early. The size the
+        /// response reports for the whole object settles it, per response, before its bytes are
+        /// consumed.
+        if (version_id.empty() && expected_total_size.has_value())
+        {
+            const bool range_requested = range_end_incl.has_value() || range_begin != 0;
+            const auto response_total_size = getTotalObjectSizeFromResponse(result, range_requested);
+            if (response_total_size.has_value() && *response_total_size != *expected_total_size)
+                throw Exception(
+                    ErrorCodes::S3_OBJECT_CHANGED_DURING_READ,
+                    "S3 object {}/{} was replaced during read (size changed from {} to {}); "
+                    "retry the query",
+                    bucket, key, *expected_total_size, *response_total_size);
+        }
+
         if (blob_storage_log)
         {
             size_t data_size = static_cast<size_t>(result.GetContentLength());
@@ -656,7 +708,7 @@ Aws::S3::Model::GetObjectResult ReadBufferFromS3::sendRequest(size_t attempt, si
     /// Map the If-Match 412 to the same non-retryable S3_OBJECT_CHANGED_DURING_READ as the success-path
     /// comparison (a generic S3 error would be retried by processException). Must map here from the raw
     /// error: S3Exception keeps only the Aws S3Errors code, not the HTTP 412 status.
-    if (version_id.empty() && !expected_etag.empty()
+    if (version_id.empty() && pin_expected_etag && !expected_etag.empty()
         && error.GetResponseCode() == Aws::Http::HttpResponseCode::PRECONDITION_FAILED)
         throw Exception(
             ErrorCodes::S3_OBJECT_CHANGED_DURING_READ,

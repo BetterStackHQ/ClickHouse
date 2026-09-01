@@ -14,12 +14,11 @@ namespace DB
 /// under it are immutable: entries are never revalidated, and leave the cache only under SLRU
 /// pressure or through `remove` after an observed read error on the object.
 ///
-/// Breaking that contract can produce stale results, not only errors. `s3_validate_etag_on_read`
-/// turns an in-place overwrite into an error only for reads that reach S3: a read served from the
-/// filesystem cache issues no GET, and the row count and schema inference caches validate against
-/// the cached last modification time. Azure and HDFS have no equivalent check. What the error path
-/// does guarantee is recovery: it removes the entry, so the next query fetches the metadata again.
-/// Absence of an object is never cached.
+/// Breaking that contract can produce stale results, not only errors. An S3 read compares the ETag
+/// and total size of every response against the entry it started from and recovers from a
+/// divergence, but only reads that reach S3 can: a read served from the filesystem cache issues no
+/// GET, and the row count and schema inference caches validate against the cached last modification
+/// time. Azure and HDFS have no equivalent check. Absence of an object is never cached.
 class ObjectMetadataCache : public CacheBase<String, ObjectMetadata>
 {
 public:

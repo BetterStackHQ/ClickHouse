@@ -34,6 +34,14 @@ private:
     /// ETag observed at read setup; each GET response ETag is checked against it to catch an
     /// in-place overwrite mid-read (instead of stitching two object generations). Empty means skip.
     String expected_etag;
+    /// Total object size observed together with `expected_etag`, checked against the size each GET
+    /// response reports for the whole object. Catches what the ETag cannot: a store may answer
+    /// without one, and an object rewritten shorter would otherwise be read as a file that ends
+    /// early. Unset means skip.
+    std::optional<size_t> expected_total_size;
+    /// Whether the GET is also pinned with `If-Match: expected_etag`. Off leaves `expected_etag`
+    /// and `expected_total_size` as the values responses are compared against.
+    bool pin_expected_etag;
     const S3::S3RequestSettings request_settings;
 
     /// These variables are atomic because they can be used for `logging only`
@@ -65,7 +73,9 @@ public:
         std::optional<size_t> file_size = std::nullopt,
         const S3CredentialsRefreshCallback & credentials_refresh_callback_ = [] {return nullptr;},
         BlobStorageLogWriterPtr blob_storage_log_ = {},
-        const String & expected_etag_ = {}
+        const String & expected_etag_ = {},
+        std::optional<size_t> expected_total_size_ = std::nullopt,
+        bool pin_expected_etag_ = true
         );
 
     ~ReadBufferFromS3() override = default;

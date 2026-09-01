@@ -1,0 +1,9 @@
+19900
+45
+45
+45
+19900
+shrunk, warming read	0
+shrunk, read after the rewrite	1
+shrunk, read after the recovery	0
+grown, read after the rewrite	1

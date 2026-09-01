@@ -34,6 +34,18 @@ struct StoredObject
     /// catching an in-place overwrite mid-read. Empty means no validation.
     String etag;
 
+    /// Whether the read is also pinned to `etag` with `If-Match`, so that a store honouring the
+    /// condition rejects a changed object before transferring anything. With the pin off, `etag`
+    /// still says which generation the read expects and every response is checked against it -
+    /// which is what a read started from remembered metadata needs.
+    bool pin_etag = true;
+
+    /// Whether `bytes_size` is also the size the read expects the whole object to have, so that a
+    /// response reporting a different one is a changed object too. Only a read started from
+    /// remembered metadata asks for this: everywhere else `bytes_size` is how much there is to
+    /// read, not a generation to recognize.
+    bool verify_size = false;
+
     explicit StoredObject(
         const String & remote_path_ = "",
         const String & local_path_ = "",
