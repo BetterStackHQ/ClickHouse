@@ -53,6 +53,11 @@ struct ObjectInfo
     std::optional<ObjectMetadata> getObjectMetadata() const { return relative_path_with_metadata.metadata; }
     void setObjectMetadata(const ObjectMetadata & metadata) { relative_path_with_metadata.metadata = metadata; }
 
+    /// Whether the metadata was served by the object metadata cache instead of being fetched from
+    /// the storage. Such metadata can describe an object that is already gone, which the source
+    /// recognizes by a failed read and resolves by dropping the entry and fetching the metadata.
+    bool metadata_from_cache = false;
+
     FileBucketInfoPtr file_bucket_info;
 
     /// Lazy materialization: if set, read only these rows of the file.
