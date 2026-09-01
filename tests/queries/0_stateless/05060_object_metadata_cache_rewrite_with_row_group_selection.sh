@@ -25,14 +25,17 @@ url="http://localhost:11111/test/$run_id/row_groups.parquet"
 ${CLICKHOUSE_CLIENT} -q "DROP TABLE IF EXISTS t_row_groups"
 ${CLICKHOUSE_CLIENT} -q "CREATE TABLE t_row_groups (n UInt64) ENGINE = S3('$url', $auth, 'Parquet')"
 
-# Row groups of 100000 rows. The predicate matches nothing in the first, which the first read
-# records in the query condition cache under the object's metadata; a later read under the same
-# metadata takes the remaining row groups alone.
+# Row groups of exactly 100000 rows: the writer closes a row group on the first block that fills
+# it, so the blocks are cut to that size rather than left to whatever max_block_size is in force
+# (a larger one stretches the first row group over the predicate, leaving nothing to record). The
+# predicate matches nothing in the first, which the first read records in the query condition
+# cache under the object's metadata; a later read under the same metadata takes the remaining row
+# groups alone.
 write()
 {
     ${CLICKHOUSE_CLIENT} -q "INSERT INTO FUNCTION s3('$url', $auth, 'Parquet', 'n UInt64')
         SELECT number FROM numbers($1)
-        SETTINGS s3_truncate_on_insert = 1, output_format_parquet_row_group_size = 100000"
+        SETTINGS s3_truncate_on_insert = 1, output_format_parquet_row_group_size = 100000, max_block_size = 100000"
 }
 
 # `s3_validate_etag_on_read = 0` sends no `If-Match`, so only the size each GET response reports can
