@@ -1166,20 +1166,29 @@ StorageObjectStorageSource::resolveStaleCachedMetadata(ObjectInfo & object_info,
     /// It was overwritten in place, which the setting's contract says never happens. The read has
     /// emitted nothing, so re-reading it under the current metadata returns the object as it is now
     /// rather than a mixture of two generations - but the violation itself must stay visible.
+    /// A read whose row groups were chosen for the previous generation - by the query condition
+    /// cache, or by the task that assigned this source its part of the file - is not repeated: the
+    /// selection would be applied to an object it was not made for. It reports its error, and the
+    /// refreshed entry serves the reads that follow.
+    const bool can_reread = !object_info.file_bucket_info;
     LOG_WARNING(
         log,
-        "Object {} was overwritten in place while its metadata was cached (etag {} -> {}, size {} -> {}); "
-        "re-reading it with the current metadata. `use_object_metadata_cache` is only sound for objects "
-        "that are never overwritten",
+        "Object {} was overwritten in place while its metadata was cached (etag {} -> {}, size {} -> {}); {}. "
+        "`use_object_metadata_cache` is only sound for objects that are never overwritten",
         object_info.getPath(),
         cached_metadata->etag,
         metadata->etag,
         cached_metadata->size_bytes,
-        metadata->size_bytes);
-    ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheRewriteRecovered);
+        metadata->size_bytes,
+        can_reread ? "re-reading it with the current metadata"
+                   : "the read selected its row groups for the previous generation and reports its error");
 
     storeObjectMetadataCache(metadata_cache_key, *metadata);
     object_info.setObjectMetadata(*metadata);
+    if (!can_reread)
+        return StaleMetadataOutcome::ReportReadError;
+
+    ProfileEvents::increment(ProfileEvents::ObjectMetadataCacheRewriteRecovered);
     /// The metadata is now this request's, not the cache's. That is what bounds the recovery to one
     /// attempt per file: should the re-read fail too, none of this applies to it and it reports the
     /// error, which is the right answer for an object that is being rewritten continuously.
