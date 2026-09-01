@@ -48,9 +48,10 @@ recovered()
         ORDER BY event_time_microseconds DESC LIMIT 1"
 }
 
-# An object rewritten SHORTER is the case that used to pass unnoticed: the reader asked for the
-# byte range the cached size described, the shorter object ended before it, and an early end is
-# what the end of a file looks like. The sum must be the new object's, never a part of the old one.
+# Both directions of a rewrite, because the reader asks for exactly the byte range the cached size
+# describes and only one of them is served wrongly. Rewritten shorter the range overshoots, the
+# store answers with the whole shorter object, and the sum is already the new one; the arm pins
+# that it stays that way. The sum must in either case be the new object's, never a part of it.
 shrunk="$prefix/shrunk.csv"
 write "$shrunk" 200
 read_unpinned "${run_id}_shrunk_warm" "$shrunk"
@@ -58,7 +59,9 @@ write "$shrunk" 10
 read_unpinned "${run_id}_shrunk_read" "$shrunk"
 read_unpinned "${run_id}_shrunk_again" "$shrunk"
 
-# An object rewritten longer, for which the ETag alone would have been enough.
+# Rewritten longer the range CLIPS the new object, and its first rows used to be returned as the
+# whole file - a short answer indistinguishable from a successful one, which is what a query is
+# never allowed to get. The sum is of all 200 rows or nothing.
 grown="$prefix/grown.csv"
 write "$grown" 10
 read_unpinned "${run_id}_grown_warm" "$grown"
