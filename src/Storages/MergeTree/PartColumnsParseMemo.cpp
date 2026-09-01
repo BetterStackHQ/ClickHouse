@@ -6,6 +6,8 @@
 #include <Storages/StorageInMemoryMetadata.h>
 #include <Common/SharedLockGuard.h>
 
+#include <mutex>
+
 namespace DB
 {
 
