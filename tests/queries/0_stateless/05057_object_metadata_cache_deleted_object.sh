@@ -3,6 +3,11 @@
 # Tag no-fasttest: requires S3
 # Tag no-parallel-replicas: relies on query_log, which does not account other replicas
 
+# Reading a deleted object is what this test does, and the storage reporting the object as missing
+# is logged at error level. The client mirrors server log messages to its stderr, where the test
+# runner takes any output for a failure, so the messages are not asked for in the first place.
+CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=none
+
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
@@ -59,6 +64,17 @@ ${CLICKHOUSE_CLIENT} -q "
     WHERE current_database = currentDatabase() AND query_id = '${run_id}_ignored'
         AND type = 'QueryFinish' AND event_date >= yesterday()
     ORDER BY event_time_microseconds DESC LIMIT 1"
+
+# Which error a read of a deleted object gets depends on the store and on whether the read is
+# conditional: without the `If-Match` of `s3_validate_etag_on_read` every store reports the missing
+# key, with it a store may report a failed precondition instead. Both are the same deletion and
+# must be skipped the same way, so the arm above is repeated with the condition switched off.
+unpinned="$prefix/unpinned.csv"
+write_object "$unpinned" 10
+${CLICKHOUSE_CLIENT} -q "SELECT sum(n) FROM s3('$unpinned', $auth, 'CSV', 'n UInt64') SETTINGS $settings"
+delete_object "$unpinned"
+${CLICKHOUSE_CLIENT} -q \
+    "SELECT count(), sum(n) FROM s3('$unpinned', $auth, 'CSV', 'n UInt64') SETTINGS $settings, s3_ignore_file_doesnt_exist = 1, s3_validate_etag_on_read = 0"
 
 # A query that does not ignore non-existent files still fails on the deleted object, and it fails
 # with a real error of the request that ran into the absence: the metadata request when the cache
