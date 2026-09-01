@@ -1,0 +1,5 @@
+warm read: 50000
+read after the rewrite: S3_OBJECT_CHANGED_DURING_READ
+read after the refresh: 250000
+recovered: after_refresh	0
+recovered: after_rewrite	0
