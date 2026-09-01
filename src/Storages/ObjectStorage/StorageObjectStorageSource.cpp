@@ -1032,9 +1032,8 @@ bool StorageObjectStorageSource::restartCurrentFile(const ObjectInfoPtr & object
 
     reader = std::move(restarted_reader);
     /// The same per-file state a move to the next file resets: the file is being read from its
-    /// start again, so nothing counted or registered for the abandoned attempt carries over.
+    /// start again, so nothing counted for the abandoned attempt carries over.
     total_rows_in_file = 0;
-    current_file_index.reset();
     return true;
 }
 
