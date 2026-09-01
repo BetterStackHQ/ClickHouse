@@ -2764,6 +2764,9 @@ void MergeTreeData::loadDataParts(bool skip_sanity_checks, std::optional<std::un
 
     std::vector<PartLoadingTree::PartLoadingInfos> parts_to_load_by_disk(disks.size());
     std::vector<PartLoadingTree::PartLoadingInfos> unexpected_parts_to_load_by_disk(disks.size());
+    /// The same listing also answers `StorageMergeTree::loadMutations`, which runs right after
+    /// this and would otherwise walk the directory a second time.
+    MutationEntryNamesByDisk mutation_entries_by_disk(disks.size());
 
     ThreadPoolCallbackRunnerLocal<void> runner(getActivePartsLoadingThreadPool().get(), ThreadName::MERGETREE_LOAD_ACTIVE_PARTS);
 
@@ -2778,16 +2781,24 @@ void MergeTreeData::loadDataParts(bool skip_sanity_checks, std::optional<std::un
 
         auto & disk_parts = parts_to_load_by_disk[i];
         auto & unexpected_disk_parts = unexpected_parts_to_load_by_disk[i];
+        auto & disk_mutation_entries = mutation_entries_by_disk[i];
+        disk_mutation_entries.first = disk_ptr;
 
         /// Capturing by references here is ok:
         /// expected_parts outlives runner
         /// unexpected_disk_parts references unexpected_parts_to_load_by_disk which outlives runner
         /// disk_parts references parts_to_load_by_disk which outlives runner
-        runner.enqueueAndKeepTrack([&expected_parts, &unexpected_disk_parts, &disk_parts, this, disk_ptr, component_name = Coordination::getCurrentComponent()]()
+        /// disk_mutation_entries references mutation_entries_by_disk which outlives runner
+        runner.enqueueAndKeepTrack([&expected_parts, &unexpected_disk_parts, &disk_parts, &disk_mutation_entries, this, disk_ptr, component_name = Coordination::getCurrentComponent()]()
         {
             auto local_component_guard = Coordination::setCurrentComponent(component_name);
             for (auto it = disk_ptr->iterateDirectory(relative_data_path); it->isValid(); it->next())
             {
+                /// Note the mutation entries before the `tmp` skip below, which would swallow
+                /// `tmp_mutation_...`.
+                if (startsWith(it->name(), "mutation_") || startsWith(it->name(), "tmp_mutation_"))
+                    disk_mutation_entries.second.push_back(it->name());
+
                 /// Skip temporary directories, file 'format_version.txt' and directory 'detached'.
                 if (startsWith(it->name(), "tmp")
                     || it->name() == MergeTreeData::FORMAT_VERSION_FILE_NAME
@@ -2807,6 +2818,8 @@ void MergeTreeData::loadDataParts(bool skip_sanity_checks, std::optional<std::un
 
     /// For iteration to be completed
     runner.waitForAllToFinishAndRethrowFirstError();
+
+    mutation_entries_seen_by_parts_scan = std::move(mutation_entries_by_disk);
 
     /// Check if the table is explicitly marked as readonly via the `table_readonly` setting.
     const bool is_table_readonly = (*settings)[MergeTreeSetting::table_readonly];
