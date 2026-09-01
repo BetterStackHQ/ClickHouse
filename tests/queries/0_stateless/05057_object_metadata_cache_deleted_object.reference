@@ -6,5 +6,10 @@ ignored read dropped the entry	1
 error code without the cache: Code: 499
 without the cache the metadata request reports the missing object: 1
 with the cache the object is reported as missing, not as changed: 1
+45
+0	0
+cluster ignored read dropped the entry	1
+on the cluster path too the object is reported as missing: 1
+20	190
 30	235
 20	190
