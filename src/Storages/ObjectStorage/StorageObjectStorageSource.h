@@ -171,6 +171,19 @@ protected:
 
     std::future<ReaderHolder> createReaderAsync();
 
+    /// Switch to the file prepared in `reader_future` and start preparing the one after it.
+    /// Returns false when there is no next file, that is, when the source is done.
+    bool moveToNextFile();
+
+    /// Whether the file of a failed read whose metadata came from the object metadata cache is to
+    /// be skipped: it is, when the query ignores non-existent files and a metadata request confirms
+    /// that the object is gone - which is what a read that fetched the metadata itself would have
+    /// found before opening the file. An object that turns out to be there was overwritten rather
+    /// than deleted, and its read keeps failing. Called while the read error is being handled:
+    /// where that error describes a changed object although the object is gone, the metadata
+    /// request is repeated so that it reports the absence itself.
+    bool skipMissingObjectAfterCacheHit(const ObjectInfo & object_info);
+
     void addNumRowsToCache(const ObjectInfo & object_info, size_t num_rows);
     void lazyInitialize();
 };
