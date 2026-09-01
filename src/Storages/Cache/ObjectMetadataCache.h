@@ -23,10 +23,17 @@ namespace DB
 class ObjectMetadataCache : public CacheBase<String, ObjectMetadata>
 {
 public:
+    /// Creates the cache on the first call, fixing its size limit at the configured value.
     static ObjectMetadataCache & instance();
+
+    /// The cache, or nullptr while no read has created it. Lets `SYSTEM DROP OBJECT METADATA CACHE`
+    /// clear the cache without creating one that only it would ever have used.
+    static ObjectMetadataCache * instanceIfCreated();
 
 private:
     explicit ObjectMetadataCache(size_t max_entries);
+
+    static std::atomic<ObjectMetadataCache *> created_instance;
 };
 
 }

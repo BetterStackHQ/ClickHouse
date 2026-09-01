@@ -1,0 +1,5 @@
+first read	1	0	1
+second read	0	1	0
+read after the cache was dropped	1	0	1
+without the grant: ACCESS_DENIED
+with the grant: ok
