@@ -329,6 +329,7 @@ bool ParserSystemQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected & 
             {"DROP DISTRIBUTED CACHE", Type::CLEAR_DISTRIBUTED_CACHE},
             {"DROP DISK METADATA CACHE", Type::CLEAR_DISK_METADATA_CACHE},
             {"DROP PAGE CACHE", Type::CLEAR_PAGE_CACHE},
+            {"DROP OBJECT METADATA CACHE", Type::CLEAR_OBJECT_METADATA_CACHE},
             {"DROP SCHEMA CACHE", Type::CLEAR_SCHEMA_CACHE},
             {"DROP FORMAT SCHEMA CACHE", Type::CLEAR_FORMAT_SCHEMA_CACHE},
             {"DROP AVRO SCHEMA CACHE", Type::CLEAR_AVRO_SCHEMA_CACHE},
@@ -1315,6 +1316,10 @@ Clears the cache of HTTP connection pools used for outgoing connections.
 ## SYSTEM CLEAR|DROP S3 CLIENT CACHE {#drop-s3-client-cache}
 
 Clears the cache of S3 clients.
+
+## SYSTEM CLEAR|DROP OBJECT METADATA CACHE {#drop-object-metadata-cache}
+
+Clears the cache of object storage metadata (size, ETag, last modification time) filled by reads that set [use_object_metadata_cache](/reference/settings/session-settings/use#use_object_metadata_cache). Entries are otherwise never revalidated, so this is the way to discard an entry left behind by an object that was overwritten in place without restarting the server.
 
 ## SYSTEM PREWARM MARK CACHE {#prewarm-mark-cache}
 

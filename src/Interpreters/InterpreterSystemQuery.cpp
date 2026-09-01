@@ -59,6 +59,7 @@
 #include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Processors/Sources/SourceFromSingleChunk.h>
 #include <QueryPipeline/QueryPipeline.h>
+#include <Storages/Cache/ObjectMetadataCache.h>
 #include <Storages/Freeze.h>
 #include <Storages/MaterializedView/RefreshTask.h>
 #include <Storages/ObjectStorage/Azure/Configuration.h>
@@ -715,6 +716,16 @@ BlockIO InterpreterSystemQuery::execute()
         {
             getContext()->checkAccess(AccessType::SYSTEM_DROP_PAGE_CACHE);
             system_context->clearPageCache();
+            break;
+        }
+        case Type::CLEAR_OBJECT_METADATA_CACHE:
+        {
+            getContext()->checkAccess(AccessType::SYSTEM_DROP_OBJECT_METADATA_CACHE);
+            /// The cache is created by the first read that uses it, and a server that never read
+            /// that way has nothing to clear - creating the cache here would only fix its size
+            /// limit at a configuration value no read has seen.
+            if (auto * object_metadata_cache = ObjectMetadataCache::instanceIfCreated())
+                object_metadata_cache->clear();
             break;
         }
         case Type::CLEAR_SCHEMA_CACHE:
@@ -2857,6 +2868,9 @@ AccessRightsElements InterpreterSystemQuery::getRequiredAccessForDDLOnCluster() 
             break;
         case Type::CLEAR_PAGE_CACHE:
             required_access.emplace_back(AccessType::SYSTEM_DROP_PAGE_CACHE);
+            break;
+        case Type::CLEAR_OBJECT_METADATA_CACHE:
+            required_access.emplace_back(AccessType::SYSTEM_DROP_OBJECT_METADATA_CACHE);
             break;
         case Type::CLEAR_SCHEMA_CACHE:
             required_access.emplace_back(AccessType::SYSTEM_DROP_SCHEMA_CACHE);

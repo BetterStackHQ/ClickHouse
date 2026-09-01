@@ -496,6 +496,7 @@ The hierarchy of privileges in ClickHouse is shown below:
       - `SYSTEM DROP FORMAT SCHEMA CACHE`
       - `SYSTEM DROP MARK CACHE`
       - `SYSTEM DROP MMAP CACHE`
+      - `SYSTEM DROP OBJECT METADATA CACHE`
       - `SYSTEM DROP PAGE CACHE`
       - `SYSTEM DROP PRIMARY INDEX CACHE`
       - `SYSTEM DROP QUERY CACHE`
