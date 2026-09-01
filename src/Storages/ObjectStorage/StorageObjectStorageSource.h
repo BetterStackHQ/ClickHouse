@@ -159,14 +159,32 @@ protected:
     /// Returns false when there is no next file, that is, when the source is done.
     bool moveToNextFile();
 
-    /// Whether the file of a failed read whose metadata came from the object metadata cache is to
-    /// be skipped: it is, when the query ignores non-existent files and a metadata request confirms
-    /// that the object is gone - which is what a read that fetched the metadata itself would have
-    /// found before opening the file. An object that turns out to be there was overwritten rather
-    /// than deleted, and its read keeps failing. Called while the read error is being handled:
-    /// where that error describes a changed object although the object is gone, the metadata
-    /// request is repeated so that it reports the absence itself.
-    bool skipMissingObjectAfterCacheHit(const ObjectInfo & object_info);
+    /// What is to become of a file whose read failed on metadata that came from the object metadata
+    /// cache, once a metadata request has established what the object actually is now.
+    enum class StaleMetadataOutcome
+    {
+        /// The metadata still describes the object, or nothing could be established about it: the
+        /// read failed on its own account and reports the error it got.
+        ReportReadError,
+        /// The object is gone and the query ignores non-existent files, exactly as a read that
+        /// fetched the metadata itself would have found before opening the file.
+        SkipFile,
+        /// The object was overwritten in place. `object_info` now carries the current metadata, so
+        /// the file can be read again as it is now.
+        RereadFile,
+    };
+
+    /// Decides between those outcomes with a metadata request that carries no read condition, so it
+    /// can answer what the read could not. Called while the read error is being handled: where that
+    /// error describes a changed object although the object is gone, the metadata request is
+    /// repeated so that it reports the absence itself. A recovered overwrite is counted and logged -
+    /// it is a violation of the immutability the cache is enabled under.
+    StaleMetadataOutcome resolveStaleCachedMetadata(ObjectInfo & object_info, const String & metadata_cache_key);
+
+    /// Rebuilds the reader for the file in hand, whose metadata has just been refreshed, and starts
+    /// it over. Leaves the file iterator and the next file's prefetched reader untouched. Returns
+    /// false when the object as it is now has nothing to read, so the source is to move on.
+    bool restartCurrentFile(const ObjectInfoPtr & object_info);
 
     void addNumRowsToCache(const ObjectInfo & object_info, size_t num_rows);
     void lazyInitialize();
