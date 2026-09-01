@@ -679,6 +679,8 @@ When reading an object from S3 (or an S3-compatible store such as GCS), check th
 Cache the object metadata (size, ETag, last modification time) that the `s3`, `azure` and `hdfs` table engines and table functions fetch before reading an object, so repeated reads of the same objects do not issue a metadata (`HEAD`) request per query.
 
 Enable only when the objects read this way are immutable, that is, never overwritten in place. Cached entries are never revalidated, so if an object is overwritten anyway, a query can still return the previous content: `s3_validate_etag_on_read` turns the overwrite into an error only for reads that reach the object store, while reads served from the filesystem cache, and the row count and schema inference caches (which validate against the cached last modification time), do not observe it. Azure and HDFS have no equivalent check. A detected overwrite invalidates the entry, so the next query observes the new object. The absence of an object is never cached. The cache is bounded by the `object_metadata_cache_max_entries` server configuration parameter (default 100000).
+
+Objects may still be deleted: a read that starts from a cached entry and finds the object gone drops the entry, and is skipped when `s3_ignore_file_doesnt_exist` allows it, exactly as a read that fetched the metadata itself would have been. This applies to S3 only, because the errors an absent object produces are recognized for S3; for Azure and HDFS a read of a deleted object fails whether or not the query ignores non-existent files.
 )", 0) \
     DECLARE(Bool, azure_check_objects_after_upload, false, R"(
 Check each uploaded object in azure blob storage to be sure that upload was successful

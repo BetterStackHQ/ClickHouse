@@ -1085,18 +1085,37 @@ bool StorageObjectStorageSource::moveToNextFile()
 
 bool StorageObjectStorageSource::skipMissingObjectAfterCacheHit(const ObjectInfo & object_info)
 {
+    /// Entries are never cached for an archive, whose members are read under a different path than
+    /// the one the metadata describes.
+    chassert(!object_info.isArchive());
+
     /// Called while the read error is being handled, and reports it unless it turns out to describe
     /// the wrong thing.
     const bool read_reported_a_changed_object = getCurrentExceptionCode() == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
 
-    /// Metadata is never cached for a request that asks for tags, nor for an archive, so this is
-    /// the very request the read would have started from had the entry not been there - and it
-    /// carries no `If-Match`, so it answers what the read could not: an object that is still there
-    /// was overwritten rather than deleted, which is not something to skip over. (An overwritten
+    /// Metadata is never cached for a request that asks for tags either, so this is the very
+    /// request the read would have started from had the entry not been there - and it carries no
+    /// `If-Match`, so it answers what the read could not: an object that is still there was
+    /// overwritten rather than deleted, which is not something to skip over. (An overwritten
     /// object's fresh metadata is also what re-reading the file would need.)
     auto metadata_object = object_info.relative_path_with_metadata;
     metadata_object.relative_path = object_info.getPath();
-    if (object_storage->tryGetObjectMetadata(metadata_object, /*with_tags=*/false).has_value())
+
+    std::optional<ObjectMetadata> metadata;
+    try
+    {
+        metadata = object_storage->tryGetObjectMetadata(metadata_object, /*with_tags=*/false);
+    }
+    catch (...)
+    {
+        /// The request itself failed, so it establishes nothing: whether the object is there is
+        /// still unknown, and a file must not be skipped, nor an error replaced, on a guess. Report
+        /// the read error, which is what a query without this cache would have reported too.
+        tryLogCurrentException(log, "Failed to fetch the metadata of an object whose read failed");
+        return false;
+    }
+
+    if (metadata.has_value())
         return false;
 
     if (configuration->getQuerySettings(read_context).ignore_non_existent_file)
