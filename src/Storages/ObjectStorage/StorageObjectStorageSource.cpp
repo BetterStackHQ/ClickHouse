@@ -1704,7 +1704,7 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
     /// different ETag means an in-place overwrite, reported as S3_OBJECT_CHANGED_DURING_READ
     /// instead of torn cross-generation data. Metadata that was remembered rather than fetched
     /// names a generation that may already be gone, and with the pin off nothing else would notice:
-    /// no failed precondition, and a shorter object read to its end like any other file. Such a
+    /// no failed precondition, and a range that clips a grown object read as a whole file. Such a
     /// read therefore hands the reader the generation to check every response against, pin or no
     /// pin - the pin only decides whether the store is asked to reject the read up front. The size
     /// is checked only there as well: a read that fetched the metadata itself a moment ago is
