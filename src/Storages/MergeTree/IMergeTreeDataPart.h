@@ -24,7 +24,6 @@
 #include <Storages/MergeTree/MergeTreeIndexGranularityInfo.h>
 #include <Storages/MergeTree/MergeTreePartInfo.h>
 #include <Storages/MergeTree/MergeTreePartition.h>
-#include <Storages/MergeTree/PartColumnsParseMemo.h>
 #include <Storages/MergeTree/PatchParts/PatchPartIndex.h>
 #include <Storages/MergeTree/PartDirIntent.h>
 #include <Storages/MergeTree/UniqueKey/DeleteBitmap.h>
@@ -51,6 +50,8 @@ class MergeTreeData;
 struct FutureMergedMutatedPart;
 class IReservation;
 using ReservationPtr = std::unique_ptr<IReservation>;
+class PartColumnsParseMemo;
+using PartColumnsParseMemoPtr = std::shared_ptr<PartColumnsParseMemo>;
 
 /// Move-only owner of a reference to an interned `SharedPartColumns` bundle.
 ///

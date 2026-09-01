@@ -5,10 +5,17 @@ CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
 
-# Parts of one table are loaded through a memo that parses each distinct `columns.txt` once. The
-# memo is keyed on the contents of the file, so a part written before a schema change must not
-# pick up the entry that belongs to parts written after it. Reloading a table whose parts carry
-# two different column lists is the case that a coarser key would get wrong.
+# Parts of one table are loaded through a memo that parses each distinct `columns.txt` once and
+# finishes the list it returns - the aggregate function versions - before sharing it. Three things
+# have to hold. The memo is keyed on the contents of the file, so a part written before a schema
+# change must not pick up the entry that belongs to parts written after it. The finished list must
+# carry the same types a part would have built for itself. And the sharing must be safe: the parts
+# of a table load concurrently, so this test is also the one to run under a thread sanitizer build
+# to certify the memo.
+#
+# Every table below keeps its parts separate with `max_bytes_to_merge_at_max_space_in_pool = 1`
+# rather than `SYSTEM STOP MERGES`, because that lock is keyed on the live table and is released
+# when the re-attached table starts up, which would merge the parts away before they are counted.
 
 ${CLICKHOUSE_CLIENT} --query "DROP TABLE IF EXISTS t_memo_uniform SYNC"
 ${CLICKHOUSE_CLIENT} --query "DROP TABLE IF EXISTS t_memo_evolved SYNC"
@@ -16,8 +23,8 @@ ${CLICKHOUSE_CLIENT} --query "DROP TABLE IF EXISTS t_memo_evolved SYNC"
 echo "-- every part shares one schema"
 ${CLICKHOUSE_CLIENT} --query "
     CREATE TABLE t_memo_uniform (id UInt32, s String, a Array(Nullable(UInt64)), d Decimal(18, 4))
-    ENGINE = MergeTree ORDER BY id SETTINGS min_bytes_for_wide_part = 1;"
-${CLICKHOUSE_CLIENT} --query "SYSTEM STOP MERGES t_memo_uniform"
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS min_bytes_for_wide_part = 1, max_bytes_to_merge_at_max_space_in_pool = 1;"
 for i in 1 2 3 4 5; do
     ${CLICKHOUSE_CLIENT} --query "
         INSERT INTO t_memo_uniform
@@ -41,8 +48,8 @@ ${CLICKHOUSE_CLIENT} --query "
 echo "-- a part written before a schema change"
 ${CLICKHOUSE_CLIENT} --query "
     CREATE TABLE t_memo_evolved (id UInt32, s String)
-    ENGINE = MergeTree ORDER BY id SETTINGS min_bytes_for_wide_part = 1;"
-${CLICKHOUSE_CLIENT} --query "SYSTEM STOP MERGES t_memo_evolved"
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS min_bytes_for_wide_part = 1, max_bytes_to_merge_at_max_space_in_pool = 1;"
 ${CLICKHOUSE_CLIENT} --query "INSERT INTO t_memo_evolved SELECT number, toString(number) FROM numbers(10)"
 
 # ADD COLUMN changes the table's metadata without rewriting existing parts, so the first part
