@@ -93,6 +93,43 @@ case "$cached_error" in
     *) echo "with the cache the object is reported as missing, not as changed: 0 ($cached_error)" ;;
 esac
 
+# `s3Cluster` reaches the cache from the other serving site: the initiator's iterator runs with
+# `skip_object_metadata`, so the entry is served in `createReader` on the worker. A deletion after
+# that entry was filled must be handled there just as it is for a plain `s3` read.
+cluster="$prefix/cluster.csv"
+write_object "$cluster" 10
+${CLICKHOUSE_CLIENT} -q \
+    "SELECT sum(n) FROM s3Cluster('test_cluster_two_shards_localhost', '$cluster', $auth, 'CSV', 'n UInt64') SETTINGS $settings"
+delete_object "$cluster"
+
+${CLICKHOUSE_CLIENT} --query_id="${run_id}_cluster_ignored" -q \
+    "SELECT count(), sum(n) FROM s3Cluster('test_cluster_two_shards_localhost', '$cluster', $auth, 'CSV', 'n UInt64') SETTINGS $settings, s3_ignore_file_doesnt_exist = 1, log_queries = 1"
+
+${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS query_log"
+# The object is read by a worker, whose events the initiator's own row does not carry, so the
+# whole query - initiator and workers alike - is what the entry has to be dropped somewhere in.
+${CLICKHOUSE_CLIENT} -q "
+    SELECT
+        'cluster ignored read dropped the entry',
+        max(ProfileEvents['ObjectMetadataCacheInvalidations']) > 0
+    FROM system.query_log
+    WHERE initial_query_id = '${run_id}_cluster_ignored'
+        AND type = 'QueryFinish' AND event_date >= yesterday()"
+
+cluster_error=$(${CLICKHOUSE_CLIENT} -q \
+    "SELECT count(), sum(n) FROM s3Cluster('test_cluster_two_shards_localhost', '$cluster', $auth, 'CSV', 'n UInt64') SETTINGS $settings" 2>&1 | error_of)
+case "$cluster_error" in
+    *S3_OBJECT_CHANGED_DURING_READ*)
+        echo "on the cluster path too the object is reported as missing: 0 ($cluster_error)" ;;
+    *"specified key does not exist"* | *"Failed to get object info"*"404"*)
+        echo "on the cluster path too the object is reported as missing: 1" ;;
+    *) echo "on the cluster path too the object is reported as missing: 0 ($cluster_error)" ;;
+esac
+
+write_object "$cluster" 20
+${CLICKHOUSE_CLIENT} -q \
+    "SELECT count(), sum(n) FROM s3Cluster('test_cluster_two_shards_localhost', '$cluster', $auth, 'CSV', 'n UInt64') SETTINGS $settings"
+
 # A glob is listing-driven, so a deleted member is simply not listed and the read is unaffected.
 write_object "$prefix/glob_1.csv" 10
 write_object "$prefix/glob_2.csv" 20
