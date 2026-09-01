@@ -107,7 +107,10 @@ public:
         const MergeTreePartInfo & info_,
         const MutableDataPartStoragePtr & data_part_storage_,
         Type part_type_,
-        const IMergeTreeDataPart * parent_part_);
+        const IMergeTreeDataPart * parent_part_,
+        /// The mark type found in the part directory, when the caller has already looked. Leave
+        /// unset to have the constructor look it up.
+        std::optional<MarkType> disk_mark_type = {});
 
     virtual bool isStoredOnReadonlyDisk() const = 0;
     virtual bool isStoredOnRemoteDisk() const = 0;
@@ -773,7 +776,7 @@ protected:
     /// They can be hardlinks to some newer parts.
     std::pair<bool, NameSet> canRemovePart() const;
 
-    void initializeIndexGranularityInfo(const MergeTreeSettings & storage_settings);
+    void initializeIndexGranularityInfo(const MergeTreeSettings & storage_settings, std::optional<MarkType> disk_mark_type = {});
 
     virtual void doCheckConsistency(bool require_part_metadata) const;
 

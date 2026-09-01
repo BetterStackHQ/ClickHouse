@@ -1,0 +1,6 @@
+mutation entry on disk before reload: 1
+mutations loaded: 1
+mutation command loaded: 1
+tmp_mutation_ entry removed: 1
+stale tmp part directory removed: 1
+rows updated by the reloaded mutation: 100

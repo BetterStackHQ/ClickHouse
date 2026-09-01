@@ -27,7 +27,8 @@ public:
         const String & name_,
         const MergeTreePartInfo & info_,
         const MutableDataPartStoragePtr & data_part_storage_,
-        const IMergeTreeDataPart * parent_part_ = nullptr);
+        const IMergeTreeDataPart * parent_part_ = nullptr,
+        std::optional<MarkType> disk_mark_type = {});
 
     bool isStoredOnReadonlyDisk() const override;
 

@@ -76,9 +76,9 @@ std::shared_ptr<IMergeTreeDataPart> MergeTreeDataPartBuilder::build()
     switch (part_type->getValue())
     {
         case PartType::Wide:
-            return std::make_shared<MergeTreeDataPartWide>(data, *data_settings, name, *part_info, part_storage, parent_part);
+            return std::make_shared<MergeTreeDataPartWide>(data, *data_settings, name, *part_info, part_storage, parent_part, disk_mark_type);
         case PartType::Compact:
-            return std::make_shared<MergeTreeDataPartCompact>(data, *data_settings, name, *part_info, part_storage, parent_part);
+            return std::make_shared<MergeTreeDataPartCompact>(data, *data_settings, name, *part_info, part_storage, parent_part, disk_mark_type);
         default:
             throw Exception(ErrorCodes::UNKNOWN_PART_TYPE,
                 "Unknown type of part {}", part_storage->getRelativePath());
@@ -135,12 +135,16 @@ MergeTreeDataPartBuilder & MergeTreeDataPartBuilder::withProjection(ProjectionDe
 MergeTreeDataPartBuilder & MergeTreeDataPartBuilder::withPartType(MergeTreeDataPartType part_type_)
 {
     part_type = part_type_;
+    /// The type is being set from something other than the directory, so a mark type probed
+    /// earlier no longer describes what is being built.
+    disk_mark_type.reset();
     return *this;
 }
 
 MergeTreeDataPartBuilder & MergeTreeDataPartBuilder::withPartStorageType(MergeTreeDataPartStorageType storage_type_)
 {
     part_storage = getPartStorageByType(storage_type_, volume, root_path, part_dir, read_settings);
+    disk_mark_type.reset();
     return *this;
 }
 
@@ -195,6 +199,7 @@ MergeTreeDataPartBuilder & MergeTreeDataPartBuilder::withPartFormatFromVolume()
 
     part_storage = std::move(storage);
     part_type = mark_type->part_type;
+    disk_mark_type = mark_type;
     return *this;
 }
 
@@ -210,6 +215,7 @@ MergeTreeDataPartBuilder & MergeTreeDataPartBuilder::withPartFormatFromStorage()
     }
 
     part_type = mark_type->part_type;
+    disk_mark_type = mark_type;
     return *this;
 }
 

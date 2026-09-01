@@ -484,7 +484,8 @@ IMergeTreeDataPart::IMergeTreeDataPart(
     const MergeTreePartInfo & info_,
     const MutableDataPartStoragePtr & data_part_storage_,
     Type part_type_,
-    const IMergeTreeDataPart * parent_part_)
+    const IMergeTreeDataPart * parent_part_,
+    std::optional<MarkType> disk_mark_type)
     : DataPartStorageHolder(data_part_storage_)
     , storage(storage_)
     , name(mutable_name)
@@ -513,7 +514,7 @@ IMergeTreeDataPart::IMergeTreeDataPart(
         DimensionalMetrics::MergeTreeParts,
         {stateToString(), part_type.toString(), std::to_string(isProjectionPart())});
 
-    initializeIndexGranularityInfo(storage_settings);
+    initializeIndexGranularityInfo(storage_settings, disk_mark_type);
 }
 
 IMergeTreeDataPart::~IMergeTreeDataPart()
@@ -2393,9 +2394,14 @@ std::pair<bool, NameSet> IMergeTreeDataPart::canRemovePart() const
     return storage.unlockSharedData(*this);
 }
 
-void IMergeTreeDataPart::initializeIndexGranularityInfo(const MergeTreeSettings & storage_settings)
+void IMergeTreeDataPart::initializeIndexGranularityInfo(const MergeTreeSettings & storage_settings, std::optional<MarkType> disk_mark_type)
 {
-    auto mrk_type = MergeTreeIndexGranularityInfo::getMarksTypeFromFilesystem(getDataPartStorage());
+    /// The builder lists the part directory to decide the part's format, and hands over the mark
+    /// type it saw there, so this usually costs nothing. Where the caller did not look - a part
+    /// built from an explicitly given format - the directory is listed here as before.
+    auto mrk_type = disk_mark_type
+        ? disk_mark_type
+        : MergeTreeIndexGranularityInfo::getMarksTypeFromFilesystem(getDataPartStorage());
     if (mrk_type)
         index_granularity_info = MergeTreeIndexGranularityInfo(storage_settings, *mrk_type);
     else

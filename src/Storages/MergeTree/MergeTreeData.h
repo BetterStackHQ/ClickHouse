@@ -685,6 +685,20 @@ public:
     /// Load the set of data parts from disk. Call once - immediately after the object is created.
     void loadDataParts(bool skip_sanity_checks, std::optional<std::unordered_set<std::string>> expected_parts);
 
+    /// Names of `mutation_...` and `tmp_mutation_...` entries per disk.
+    using MutationEntryNamesByDisk = std::vector<std::pair<DiskPtr, Strings>>;
+
+    /// The mutation entries `loadDataParts` saw while listing the table directory, so that
+    /// `StorageMergeTree::loadMutations` does not have to list it again. Empty until the parts
+    /// scan has run, and emptied by this call, so a second consumer would list the directory
+    /// itself rather than silently see nothing.
+    MutationEntryNamesByDisk takeMutationEntryNamesSeenByPartsScan()
+    {
+        MutationEntryNamesByDisk result;
+        result.swap(mutation_entries_seen_by_parts_scan);
+        return result;
+    }
+
     /// Check the set of data parts on disk and load if needed, assuming the data on disk can change under the hood.
     /// This method allows read-only replicas of tables on a shared storage.
     /// `refreshDataParts` is the background-task entry point: it reschedules itself afterwards.
@@ -1949,6 +1963,10 @@ protected:
 
     BackgroundSchedulePoolTaskHolder outdated_data_parts_loading_task;
     PartLoadingTreeNodes outdated_unloaded_data_parts TSA_GUARDED_BY(outdated_data_parts_mutex);
+
+    /// Written once by `loadDataParts` and taken once by `StorageMergeTree::loadMutations`, both
+    /// from the constructor before the table is published, so no synchronisation is needed.
+    MutationEntryNamesByDisk mutation_entries_seen_by_parts_scan;
     bool outdated_data_parts_loading_canceled TSA_GUARDED_BY(outdated_data_parts_mutex) = false;
 
     mutable std::mutex unexpected_data_parts_mutex;

@@ -44,8 +44,9 @@ MergeTreeDataPartWide::MergeTreeDataPartWide(
     const String & name_,
     const MergeTreePartInfo & info_,
     const MutableDataPartStoragePtr & data_part_storage_,
-    const IMergeTreeDataPart * parent_part_)
-    : IMergeTreeDataPart(storage_, storage_settings, name_, info_, data_part_storage_, Type::Wide, parent_part_)
+    const IMergeTreeDataPart * parent_part_,
+    std::optional<MarkType> disk_mark_type)
+    : IMergeTreeDataPart(storage_, storage_settings, name_, info_, data_part_storage_, Type::Wide, parent_part_, disk_mark_type)
 {
 }
 
