@@ -60,6 +60,17 @@ ${CLICKHOUSE_CLIENT} -q "
         AND type = 'QueryFinish' AND event_date >= yesterday()
     ORDER BY event_time_microseconds DESC LIMIT 1"
 
+# Which error a read of a deleted object gets depends on the store and on whether the read is
+# conditional: without the `If-Match` of `s3_validate_etag_on_read` every store reports the missing
+# key, with it a store may report a failed precondition instead. Both are the same deletion and
+# must be skipped the same way, so the arm above is repeated with the condition switched off.
+unpinned="$prefix/unpinned.csv"
+write_object "$unpinned" 10
+${CLICKHOUSE_CLIENT} -q "SELECT sum(n) FROM s3('$unpinned', $auth, 'CSV', 'n UInt64') SETTINGS $settings"
+delete_object "$unpinned"
+${CLICKHOUSE_CLIENT} -q \
+    "SELECT count(), sum(n) FROM s3('$unpinned', $auth, 'CSV', 'n UInt64') SETTINGS $settings, s3_ignore_file_doesnt_exist = 1, s3_validate_etag_on_read = 0"
+
 # A query that does not ignore non-existent files still fails on the deleted object, and it fails
 # with a real error of the request that ran into the absence: the metadata request when the cache
 # was not consulted, the read itself when a cache hit stood in for that request. Either way the

@@ -21,8 +21,6 @@
 #include <IO/EmptyReadBuffer.h>
 #include <IO/ReadBufferFromFileBase.h>
 #include <IO/ReadWriteBufferFromHTTP.h>
-#include <IO/S3Common.h>
-#include <IO/S3/getObjectInfo.h>
 #include <Disks/IO/ReadBufferFromWebServer.h>
 #include <IO/ReadPipeline.h>
 #include <IO/CachedInMemoryReadBufferFromFile.h>
@@ -110,6 +108,7 @@ namespace ErrorCodes
     extern const int CANNOT_UNPACK_ARCHIVE;
     extern const int LOGICAL_ERROR;
     extern const int FILE_DOESNT_EXIST;
+    extern const int S3_ERROR;
     extern const int S3_OBJECT_CHANGED_DURING_READ;
     extern const int TOO_MANY_ROWS;
     extern const int UNSUPPORTED_METHOD;
@@ -422,23 +421,18 @@ void invalidateObjectMetadataCache(const String & cache_key)
 }
 
 /// Whether the exception being handled can mean that the object being read is no longer there.
-/// Matched on the error code, never on the message, which differs between storages and between the
-/// requests that run into the absence. The match is deliberately wide - a store answers a
-/// conditional read of a deleted object with a failed precondition rather than with a missing key -
-/// because the absence is confirmed by a metadata request afterwards anyway.
+/// Matched on the error code only. The message is out of the question - it differs between storages
+/// and between the requests that run into the absence - and so is the exception type: the pipeline
+/// hands an exception between processors by value, which slices an `S3Exception` down to the error
+/// code every S3 failure shares. The match is therefore wide, and deliberately so: it decides which
+/// failures are worth a metadata request, and that request, not this, establishes the absence.
 bool mayReportMissingObject()
 {
-#if USE_AWS_S3
-    /// A `GET` of a deleted key fails with `NoSuchKey`, which `ReadBufferFromS3` reports as an
-    /// `S3Exception` (error code `S3_ERROR`, shared with every other S3 failure) carrying the
-    /// original S3 error type.
-    if (const auto * s3_exception = current_exception_cast<const S3Exception *>())
-        return S3::isNotFoundError(s3_exception->getS3ErrorCode());
-#endif
     const auto code = getCurrentExceptionCode();
-    /// The `If-Match` of `s3_validate_etag_on_read` turns that same `GET` into a failed
-    /// precondition on stores that evaluate the condition before reporting the missing key.
-    return code == ErrorCodes::FILE_DOESNT_EXIST || code == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
+    /// The `If-Match` of `s3_validate_etag_on_read` makes a store that evaluates the condition
+    /// before reporting the missing key answer a read of a deleted object with a failed precondition.
+    return code == ErrorCodes::S3_ERROR || code == ErrorCodes::FILE_DOESNT_EXIST
+        || code == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ;
 }
 
 }
