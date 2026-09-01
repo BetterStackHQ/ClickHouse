@@ -3,6 +3,12 @@
 # Tag no-fasttest: requires S3
 # Tag no-parallel-replicas: relies on query_log, which does not account other replicas
 
+# Reading an object that was overwritten in place is what this test does, and the read that meets
+# the overwrite is logged at error level even where it goes on to recover. The client mirrors
+# server log messages to its stderr, where the test runner takes any output for a failure, so the
+# messages are not asked for in the first place.
+CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=none
+
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
