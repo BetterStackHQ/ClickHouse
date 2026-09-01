@@ -60,7 +60,7 @@ ${CLICKHOUSE_CLIENT} --query "
     SELECT count() > 0 FROM system.text_log
     WHERE event_date >= yesterday() AND event_time >= now() - 600
       AND logger_name LIKE '${CLICKHOUSE_DATABASE}.t_listing%'
-      AND message LIKE 'Loading mutation: mutation\_%'
+      AND message LIKE 'Loading mutation: mutation%'
     SETTINGS max_rows_to_read = 0"
 
 # Only `loadMutations` can account for this one: the entry is a regular file, and the temporary
