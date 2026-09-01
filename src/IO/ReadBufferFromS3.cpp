@@ -664,10 +664,11 @@ Aws::S3::Model::GetObjectResult ReadBufferFromS3::sendRequest(size_t attempt, si
                 bucket, key, expected_etag, response_etag);
 
         /// The ETag does not close the gap on its own: a store may answer without one, and where
-        /// the read is not pinned there is no failed precondition either, so an object rewritten
-        /// shorter would be served in full and read as a file that simply ends early. The size the
-        /// response reports for the whole object settles it, per response, before its bytes are
-        /// consumed.
+        /// the read is not pinned there is no failed precondition either. What is left is a read
+        /// asking for the byte range the size it expects describes, which an object that has since
+        /// grown answers with its first bytes - a whole file, as far as everything downstream can
+        /// tell. The size the response reports for the whole object settles it, per response,
+        /// before its bytes are consumed.
         if (version_id.empty() && expected_total_size.has_value())
         {
             const bool range_requested = range_end_incl.has_value() || range_begin != 0;
