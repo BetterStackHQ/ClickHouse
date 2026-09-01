@@ -36,8 +36,8 @@ private:
     String expected_etag;
     /// Total object size observed together with `expected_etag`, checked against the size each GET
     /// response reports for the whole object. Catches what the ETag cannot: a store may answer
-    /// without one, and an object rewritten shorter would otherwise be read as a file that ends
-    /// early. Unset means skip.
+    /// without one, and the range this size describes would otherwise be read as a whole file even
+    /// where it only clips the beginning of a longer object. Unset means skip.
     std::optional<size_t> expected_total_size;
     /// Whether the GET is also pinned with `If-Match: expected_etag`. Off leaves `expected_etag`
     /// and `expected_total_size` as the values responses are compared against.
