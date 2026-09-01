@@ -6957,6 +6957,7 @@ void QueryFuzzer::fuzz(ASTPtr & ast)
                 Type::CLEAR_COMPILED_EXPRESSION_CACHE,
                 Type::CLEAR_ICEBERG_METADATA_CACHE,
                 Type::CLEAR_PAGE_CACHE,
+                Type::CLEAR_OBJECT_METADATA_CACHE,
                 Type::CLEAR_S3_CLIENT_CACHE,
             };
             for (const auto & t : plain_cache_types)
