@@ -38,7 +38,11 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
     const ContextPtr & context_,
     const LoggerPtr & log,
     const std::optional<ReadSettings> & read_settings = std::nullopt,
-    bool allow_page_cache = true);
+    bool allow_page_cache = true,
+    /// Whether the metadata of `object_info` was remembered rather than fetched. The generation it
+    /// describes may already be gone, so the read is told to check every response against it even
+    /// where `s3_validate_etag_on_read` leaves it unpinned.
+    bool metadata_from_cache = false);
 
 /// Joins an object's path under a storage prefix (a namespace, or a data source description).
 /// A leading separator is dropped only when there is a prefix to join under, since `fs::path`

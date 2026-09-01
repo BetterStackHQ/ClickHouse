@@ -275,7 +275,14 @@ std::unique_ptr<ReadBufferFromFileBase> S3ObjectStorage::readObject( /// NOLINT
         (object.bytes_size && object.bytes_size != StoredObject::UnknownSize) ? std::optional<size_t>(object.bytes_size) : std::nullopt,
         credentials_refresh_callback,
         std::move(blob_storage_log),
-        object.etag);
+        object.etag,
+        /// The size to check every response against, where the caller says `bytes_size` names the
+        /// generation the read expects. A zero-length object compares like any other; only the
+        /// unknown-size sentinel has nothing to compare.
+        (object.verify_size && object.bytes_size != StoredObject::UnknownSize)
+            ? std::optional<size_t>(object.bytes_size)
+            : std::nullopt,
+        object.pin_etag);
 }
 
 SmallObjectDataWithMetadata S3ObjectStorage::readSmallObjectAndGetObjectMetadata( /// NOLINT
