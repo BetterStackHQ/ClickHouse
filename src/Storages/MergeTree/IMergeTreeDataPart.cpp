@@ -36,6 +36,7 @@
 #include <Storages/MergeTree/MergeTreeIndices.h>
 #include <Storages/MergeTree/MergeTreeMarksLoader.h>
 #include <Storages/MergeTree/MergeTreeSettings.h>
+#include <Storages/MergeTree/PartColumnsParseMemo.h>
 #include <Storages/MergeTree/PatchParts/PatchPartsUtils.h>
 #include <Storages/MergeTree/UniqueKey/DeleteBitmapCache.h>
 #include <Storages/MergeTree/PrimaryIndexCache.h>
@@ -2175,7 +2176,9 @@ void IMergeTreeDataPart::loadColumns(bool require, bool load_metadata_version, c
         if (columns_parse_memo)
         {
             /// The contents fully determine the parse, so parts that share a schema - nearly all
-            /// of them - resolve their types once for the whole batch instead of once each.
+            /// of them - resolve their types once for the whole batch instead of once each. The
+            /// list comes back finished: the memo applies the step of the branch below itself, so
+            /// that it too runs once for the batch rather than once for every part in it.
             String contents;
             readStringUntilEOF(contents, *in);
             loaded_columns = columns_parse_memo->parse(contents);
@@ -2183,10 +2186,10 @@ void IMergeTreeDataPart::loadColumns(bool require, bool load_metadata_version, c
         else
         {
             loaded_columns.readText(*in);
-        }
 
-        for (auto & column : loaded_columns)
-            setVersionToAggregateFunctions(column.type, true);
+            for (auto & column : loaded_columns)
+                setVersionToAggregateFunctions(column.type, true);
+        }
     }
     else
     {
