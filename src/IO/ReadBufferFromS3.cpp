@@ -80,8 +80,11 @@ std::optional<size_t> getTotalObjectSizeFromResponse(const Aws::S3::Model::GetOb
 {
     if (!range_requested)
     {
+        /// A response without the header leaves the SDK's default of 0 in place, so 0 is not taken
+        /// for a size either: an object that is empty has nothing a range could clip, and one that
+        /// grew from empty answers with its new length.
         const auto content_length = result.GetContentLength();
-        if (content_length < 0)
+        if (content_length <= 0)
             return std::nullopt;
         return static_cast<size_t>(content_length);
     }
