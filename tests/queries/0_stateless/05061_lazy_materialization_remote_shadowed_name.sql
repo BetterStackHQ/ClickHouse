@@ -9,7 +9,7 @@ DROP VIEW IF EXISTS lm_remote_view;
 
 CREATE TABLE lm_remote_base (dt DateTime64(6, 'UTC'), idx UInt32, raw String, kind UInt8)
     ENGINE = MergeTree ORDER BY (kind, dt, idx);
-INSERT INTO lm_remote_base SELECT toDateTime64('2026-01-01 00:00:00', 6) + number, number, repeat('x', 200), 1 FROM numbers(5000);
+INSERT INTO lm_remote_base SELECT toDateTime64('2026-01-01 00:00:00', 6, 'UTC') + number, number, repeat('x', 200), 1 FROM numbers(5000);
 CREATE VIEW lm_remote_view AS SELECT * EXCEPT kind FROM lm_remote_base WHERE kind = 1;
 
 SET optimize_read_in_order = 0;
@@ -17,13 +17,13 @@ SET query_plan_optimize_lazy_materialization = 1, query_plan_max_limit_for_lazy_
 
 SELECT dt, length(raw) FROM (
     SELECT dt, raw FROM remote('127.0.0.1', currentDatabase(), lm_remote_view)
-    WHERE dt > toDateTime64('2026-01-01 00:00:20', 6)
+    WHERE dt > toDateTime64('2026-01-01 00:00:20', 6, 'UTC')
 ) ORDER BY dt ASC LIMIT 3;
 
 SELECT count() FROM (
     SELECT * FROM (
         SELECT dt, raw FROM remote('127.0.0.1', currentDatabase(), lm_remote_view)
-        WHERE dt > toDateTime64('2026-01-01 00:00:20', 6)
+        WHERE dt > toDateTime64('2026-01-01 00:00:20', 6, 'UTC')
     ) ORDER BY dt ASC LIMIT 1000
 );
 
