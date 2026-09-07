@@ -43,6 +43,7 @@
     M(FailedSelectQuery, "Same as FailedQuery, but only for SELECT queries.", ValueType::Number) \
     M(FailedInsertQuery, "Same as FailedQuery, but only for INSERT queries.", ValueType::Number) \
     M(FailedAsyncInsertQuery, "Number of failed ASYNC INSERT queries.", ValueType::Number) \
+    M(AsyncInsertEntriesExpiredBeforeFlush, "Number of asynchronous INSERT queries whose time limit passed while they were queued, so they were failed instead of flushed.", ValueType::Number) \
     M(ASTFuzzerQueries, "Number of fuzzed queries attempted by the server-side AST fuzzer.", ValueType::Number) \
     M(ASTFuzzerOracleChecks, "Number of oracle checks attempted by the server-side AST fuzzer.", ValueType::Number) \
     M(ASTFuzzerOracleTLPAggregateChecks, "Number of TLP Aggregate (State/Merge) oracle checks attempted by the server-side AST fuzzer.", ValueType::Number) \

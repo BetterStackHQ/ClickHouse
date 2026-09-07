@@ -71,6 +71,7 @@ namespace ProfileEvents
     extern const Event AsyncInsertBytes;
     extern const Event AsyncInsertRows;
     extern const Event FailedAsyncInsertQuery;
+    extern const Event AsyncInsertEntriesExpiredBeforeFlush;
 }
 
 namespace DB
@@ -82,6 +83,7 @@ namespace Setting
     extern const SettingsDouble async_insert_busy_timeout_increase_rate;
     extern const SettingsMilliseconds async_insert_busy_timeout_min_ms;
     extern const SettingsMilliseconds async_insert_busy_timeout_max_ms;
+    extern const SettingsBool async_insert_flush_timeout_from_queries;
     extern const SettingsUInt64 async_insert_max_data_size;
     extern const SettingsUInt64 async_insert_max_query_number;
     extern const SettingsMilliseconds async_insert_poll_timeout_ms;
@@ -92,12 +94,15 @@ namespace Setting
     extern const SettingsBool input_format_defaults_for_omitted_fields;
     extern const SettingsUInt64 log_queries_cut_to_length;
     extern const SettingsUInt64 max_columns_to_read;
+    extern const SettingsSeconds max_execution_time;
     extern const SettingsBool optimize_trivial_count_query;
     extern const SettingsUInt64 parallel_replicas_count;
     extern const SettingsString parallel_replicas_custom_key;
     extern const SettingsUInt64 parallel_replicas_custom_key_range_lower;
     extern const SettingsUInt64 parallel_replica_offset;
     extern const SettingsSnappyMode snappy_mode;
+    extern const SettingsBool wait_for_async_insert;
+    extern const SettingsSeconds wait_for_async_insert_timeout;
 }
 
 namespace ErrorCodes
@@ -1147,6 +1152,64 @@ try
 
     insert_context->setSettings(*key.settings);
 
+    /// Bound the flush by the deadlines of the queries waiting for it, counted from the moment
+    /// each was queued: `max_execution_time` and `wait_for_async_insert_timeout`, whichever is
+    /// shorter (once either passes, that client has been told the insert failed and will retry).
+    /// All entries of a batch share one settings set, so the limit is the same for every entry
+    /// and only the queue time differs. Entries whose deadline has already passed are failed
+    /// instead of flushed (after the log helper is defined below); the earliest remaining
+    /// deadline becomes the flush's own `max_execution_time`, which the cancellation checker
+    /// enforces from `ProcessList::insert` on (a few microseconds after `now`, rounded up to
+    /// the checker's grid).
+    ///
+    /// Inserts that do not wait for the flush were acknowledged when they were queued, so their
+    /// data must not be dropped for a limit their client is no longer watching; for them the
+    /// flush keeps applying `max_execution_time` from its own start, as before.
+    Int64 entry_limit_ms = 0;
+    std::vector<std::pair<InsertData::EntryPtr, Int64>> expired_entries;
+    if ((*key.settings)[Setting::async_insert_flush_timeout_from_queries] && (*key.settings)[Setting::wait_for_async_insert])
+    {
+        auto consider_limit = [&](Int64 limit_ms)
+        {
+            if (limit_ms > 0 && (entry_limit_ms == 0 || limit_ms < entry_limit_ms))
+                entry_limit_ms = limit_ms;
+        };
+        consider_limit((*key.settings)[Setting::max_execution_time].totalMilliseconds());
+        consider_limit((*key.settings)[Setting::wait_for_async_insert_timeout].totalMilliseconds());
+    }
+
+    if (entry_limit_ms > 0)
+    {
+        const auto now = std::chrono::system_clock::now();
+        std::optional<Int64> remaining_ms;
+        for (const auto & entry : data->entries)
+        {
+            /// The clock is the system clock (the entry's timestamp is taken with it); a backwards
+            /// jump must not extend a deadline, so a negative queue time counts as zero.
+            const Int64 queued_ms = std::max<Int64>(0, std::chrono::duration_cast<std::chrono::milliseconds>(now - entry->create_time).count());
+            if (queued_ms >= entry_limit_ms)
+            {
+                expired_entries.emplace_back(entry, queued_ms);
+                continue;
+            }
+            const Int64 entry_remaining_ms = entry_limit_ms - queued_ms;
+            if (!remaining_ms || entry_remaining_ms < *remaining_ms)
+                remaining_ms = entry_remaining_ms;
+        }
+
+        if (remaining_ms)
+        {
+            /// `max_execution_time` is a seconds setting that accepts a fractional value; the process
+            /// list and the cancellation checker consume it with millisecond resolution. A flush cut
+            /// short must fail rather than report a partial insert as a success, whatever the
+            /// clients' `timeout_overflow_mode`.
+            insert_context->setSetting("max_execution_time", Field(static_cast<Float64>(*remaining_ms) / 1000.0));
+            insert_context->setSetting("timeout_overflow_mode", String("throw"));
+            LOG_DEBUG(log, "Limiting the flush to {} ms: the earliest of {} waiting inserts has that much of its {} ms limit left",
+                *remaining_ms, data->entries.size() - expired_entries.size(), entry_limit_ms);
+        }
+    }
+
     /// Set initial_query_id, because it's used in InterpreterInsertQuery for table lock.
     insert_context->setCurrentQueryId(""); // "" means generate a new query id
 
@@ -1365,6 +1428,25 @@ try
 
     try
     {
+        /// Inserts whose deadline passed while they were queued: fail them with the timeout they
+        /// asked for and drop their data from the batch (`finish` releases the chunk). The parse
+        /// and preprocess loops skip finished entries, and `finish_entries` leaves them alone.
+        if (!expired_entries.empty())
+        {
+            for (const auto & [entry, queued_ms] : expired_entries)
+            {
+                auto exception = std::make_exception_ptr(Exception(ErrorCodes::TIMEOUT_EXCEEDED,
+                    "Asynchronous insert was not flushed within {} ms of being queued: the flush started {} ms after it",
+                    entry_limit_ms, queued_ms));
+                add_entry_to_asynchronous_insert_log(entry, getExceptionMessage(exception, /*with_stacktrace=*/ false), /*num_rows=*/ 0, entry->chunk.byteSize(), /*is_flush_error=*/ true);
+                entry->finish(exception);
+            }
+
+            ProfileEvents::increment(ProfileEvents::AsyncInsertEntriesExpiredBeforeFlush, expired_entries.size());
+            LOG_INFO(log, "{} of {} async inserts in the batch passed their {} ms limit before the flush started and were not flushed",
+                expired_entries.size(), data->entries.size(), entry_limit_ms);
+        }
+
         Chunk chunk;
         auto header = pipeline.getSharedHeader();
 
@@ -1474,6 +1556,10 @@ Chunk AsynchronousInsertQueue::processEntriesWithParsing(
 
     for (const auto & entry : data->entries)
     {
+        /// Failed before the flush (its deadline passed while queued); its data is gone.
+        if (entry->isFinished())
+            continue;
+
         current_entry = entry;
 
         const auto * bytes = entry->chunk.asString();
@@ -1518,6 +1604,10 @@ Chunk AsynchronousInsertQueue::processPreprocessedEntries(
 
     for (const auto & entry : data->entries)
     {
+        /// Failed before the flush (its deadline passed while queued); its data is gone.
+        if (entry->isFinished())
+            continue;
+
         const auto * block = entry->chunk.asBlock();
         if (!block)
             throw Exception(ErrorCodes::LOGICAL_ERROR,
