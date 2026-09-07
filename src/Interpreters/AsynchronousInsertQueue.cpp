@@ -973,6 +973,34 @@ String serializeQuery(const IAST & query, size_t max_length)
 
 }
 
+std::optional<AsynchronousInsertQueue::ResultProgress> AsynchronousInsertQueue::waitForResult(
+    std::future<ResultProgress> & future, size_t timeout_ms, const QueryStatusPtr & process_list_elem)
+{
+    /// Bounds the latency of noticing a kill or a time limit while waiting for the flush.
+    static constexpr size_t max_wait_slice_ms = 100;
+
+    Stopwatch watch;
+    while (true)
+    {
+        const size_t elapsed_ms = watch.elapsedMilliseconds();
+        const size_t slice_ms = std::min(timeout_ms > elapsed_ms ? timeout_ms - elapsed_ms : 0, max_wait_slice_ms);
+        auto status = future.wait_for(std::chrono::milliseconds(slice_ms));
+        if (status == std::future_status::deferred)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Got future in deferred state");
+
+        if (status == std::future_status::ready)
+            return future.get();
+
+        if (watch.elapsedMilliseconds() >= timeout_ms)
+            throw Exception(ErrorCodes::TIMEOUT_EXCEEDED, "Wait for async insert timeout ({} ms) exceeded", timeout_ms);
+
+        /// Throws when the query was killed or its `max_execution_time` passed; returns false
+        /// under `timeout_overflow_mode = 'break'`, in which case the query stops waiting.
+        if (process_list_elem && !process_list_elem->checkTimeLimit())
+            return std::nullopt;
+    }
+}
+
 void AsynchronousInsertQueue::processData(
     InsertQuery key, InsertDataPtr data, ContextPtr global_context, ThreadGroupPtr current_query_thread_group, QueueShardFlushTimeHistory & queue_shard_flush_time_history)
 try

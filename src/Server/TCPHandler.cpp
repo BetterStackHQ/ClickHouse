@@ -1455,22 +1455,18 @@ void TCPHandler::processInsertQuery(QueryState & state)
             if (settings[Setting::wait_for_async_insert])
             {
                 size_t timeout_ms = settings[Setting::wait_for_async_insert_timeout].totalMilliseconds();
-                auto wait_status = result.future.wait_for(std::chrono::milliseconds(timeout_ms));
+                auto process_list_elem = state.query_context->getProcessListElement();
 
-                if (wait_status == std::future_status::deferred)
-                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Got future in deferred state");
-
-                if (wait_status == std::future_status::timeout)
-                    throw Exception(ErrorCodes::TIMEOUT_EXCEEDED, "Wait for async insert timeout ({} ms) exceeded", timeout_ms);
-
-                auto progress_result = result.future.get();
+                /// Interruptible by the query's own time limit and by KILL QUERY; empty under
+                /// `timeout_overflow_mode = 'break'` when the limit passed.
+                auto maybe_progress = AsynchronousInsertQueue::waitForResult(result.future, timeout_ms, process_list_elem);
 
                 /// Report the written rows/bytes as progress so that the client
                 /// and query_log reflect the actual insert stats.
-                if (auto process_list_elem = state.query_context->getProcessListElement())
+                if (maybe_progress && process_list_elem)
                 {
-                    process_list_elem->updateProgressOut(Progress(WriteProgress(progress_result.rows, progress_result.bytes)));
-                    process_list_elem->updateProgressIn(Progress(ReadProgress(progress_result.rows, progress_result.bytes)));
+                    process_list_elem->updateProgressOut(Progress(WriteProgress(maybe_progress->rows, maybe_progress->bytes)));
+                    process_list_elem->updateProgressIn(Progress(ReadProgress(maybe_progress->rows, maybe_progress->bytes)));
                 }
             }
 

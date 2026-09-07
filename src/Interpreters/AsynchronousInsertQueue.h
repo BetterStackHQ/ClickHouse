@@ -14,6 +14,7 @@
 #include <Interpreters/Context_fwd.h>
 
 #include <future>
+#include <optional>
 #include <variant>
 
 namespace DB
@@ -21,6 +22,9 @@ namespace DB
 
 class ThreadGroup;
 using ThreadGroupPtr = std::shared_ptr<ThreadGroup>;
+
+class QueryStatus;
+using QueryStatusPtr = std::shared_ptr<QueryStatus>;
 
 struct Settings;
 
@@ -67,6 +71,13 @@ public:
     };
 
     static void validateSettings(const Settings & settings, LoggerPtr log);
+
+    /// Waits up to `timeout_ms` for the result of a queued insert, in slices, so that the waiting
+    /// query's own time limit and KILL QUERY take effect while the flush is still running rather
+    /// than when it finishes. Throws TIMEOUT_EXCEEDED when the wait timeout passes, and whatever
+    /// the query's time limit check throws when the query was killed or its limit passed. Returns
+    /// nothing when the query's `timeout_overflow_mode` is `break` and its limit passed.
+    static std::optional<ResultProgress> waitForResult(std::future<ResultProgress> & future, size_t timeout_ms, const QueryStatusPtr & process_list_elem);
 
     /// Force flush the whole queue.
     void flushAll();
