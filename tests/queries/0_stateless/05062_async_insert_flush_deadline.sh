@@ -133,7 +133,7 @@ function rows_with_id()
 
 function expired_counter()
 {
-    $CLICKHOUSE_CLIENT -q "SELECT value FROM system.events WHERE event = 'AsyncInsertEntriesExpiredBeforeFlush' UNION ALL SELECT 0 ORDER BY 1 DESC LIMIT 1"
+    $CLICKHOUSE_CLIENT -q "SELECT max(value) FROM (SELECT value FROM system.events WHERE event = 'AsyncInsertEntriesExpiredBeforeFlush' UNION ALL SELECT 0)"
 }
 
 echo "-- 1. only wait_for_async_insert_timeout=2: the flush inherits it and is killed at ~2 s"
