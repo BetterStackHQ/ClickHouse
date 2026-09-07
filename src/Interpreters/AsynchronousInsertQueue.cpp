@@ -40,6 +40,7 @@
 #include <Processors/Transforms/getSourceFromASTInsertQuery.h>
 #include <QueryPipeline/Pipe.h>
 #include <QueryPipeline/QueryPipeline.h>
+#include <QueryPipeline/SizeLimits.h>
 #include <Storages/IStorage.h>
 #include <Common/CurrentThread.h>
 #include <Common/QueryScope.h>
@@ -101,6 +102,7 @@ namespace Setting
     extern const SettingsUInt64 parallel_replicas_custom_key_range_lower;
     extern const SettingsUInt64 parallel_replica_offset;
     extern const SettingsSnappyMode snappy_mode;
+    extern const SettingsOverflowMode timeout_overflow_mode;
     extern const SettingsBool wait_for_async_insert;
     extern const SettingsSeconds wait_for_async_insert_timeout;
 }
@@ -1192,10 +1194,13 @@ try
     ///
     /// Inserts that do not wait for the flush were acknowledged when they were queued, so their
     /// data must not be dropped for a limit their client is no longer watching; for them the
-    /// flush keeps applying `max_execution_time` from its own start, as before.
+    /// flush keeps applying `max_execution_time` from its own start, as before. The same holds
+    /// for inserts whose `timeout_overflow_mode` is `break`: their client stops waiting at the
+    /// limit without an error, so the data must still be flushed.
     Int64 entry_limit_ms = 0;
     std::vector<std::pair<InsertData::EntryPtr, Int64>> expired_entries;
-    if ((*key.settings)[Setting::async_insert_flush_timeout_from_queries] && (*key.settings)[Setting::wait_for_async_insert])
+    if ((*key.settings)[Setting::async_insert_flush_timeout_from_queries] && (*key.settings)[Setting::wait_for_async_insert]
+        && (*key.settings)[Setting::timeout_overflow_mode] == OverflowMode::THROW)
     {
         auto consider_limit = [&](Int64 limit_ms)
         {
@@ -1228,11 +1233,8 @@ try
         if (remaining_ms)
         {
             /// `max_execution_time` is a seconds setting that accepts a fractional value; the process
-            /// list and the cancellation checker consume it with millisecond resolution. A flush cut
-            /// short must fail rather than report a partial insert as a success, whatever the
-            /// clients' `timeout_overflow_mode`.
+            /// list and the cancellation checker consume it with millisecond resolution.
             insert_context->setSetting("max_execution_time", Field(static_cast<Float64>(*remaining_ms) / 1000.0));
-            insert_context->setSetting("timeout_overflow_mode", String("throw"));
             LOG_DEBUG(log, "Limiting the flush to {} ms: the earliest of {} waiting inserts has that much of its {} ms limit left",
                 *remaining_ms, data->entries.size() - expired_entries.size(), entry_limit_ms);
         }
