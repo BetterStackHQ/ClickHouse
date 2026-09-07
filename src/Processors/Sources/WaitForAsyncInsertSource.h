@@ -4,6 +4,7 @@
 #include <Interpreters/AsynchronousInsertQueue.h>
 #include <Interpreters/ProcessList.h>
 #include <IO/Progress.h>
+#include <Common/Stopwatch.h>
 
 namespace DB
 {
@@ -36,14 +37,33 @@ public:
     String getName() const override { return "WaitForAsyncInsert"; }
 
 protected:
+    /// Bounds the latency of noticing a kill or a time limit while waiting for the flush.
+    static constexpr UInt64 max_wait_slice_ms = 100;
+
     Chunk generate() override
     {
-        auto status = insert_future.wait_for(std::chrono::milliseconds(timeout_ms));
-        if (status == std::future_status::deferred)
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "Got future in deferred state");
+        /// Wait in slices, so that the query's own time limit and KILL QUERY take effect while the
+        /// flush is still running instead of when it finishes.
+        Stopwatch watch;
+        while (true)
+        {
+            const UInt64 elapsed_ms = watch.elapsedMilliseconds();
+            const UInt64 slice_ms = std::min<UInt64>(timeout_ms > elapsed_ms ? timeout_ms - elapsed_ms : 0, max_wait_slice_ms);
+            auto status = insert_future.wait_for(std::chrono::milliseconds(slice_ms));
+            if (status == std::future_status::deferred)
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Got future in deferred state");
 
-        if (status == std::future_status::timeout)
-            throw Exception(ErrorCodes::TIMEOUT_EXCEEDED, "Wait for async insert timeout ({} ms) exceeded", timeout_ms);
+            if (status == std::future_status::ready)
+                break;
+
+            if (watch.elapsedMilliseconds() >= timeout_ms)
+                throw Exception(ErrorCodes::TIMEOUT_EXCEEDED, "Wait for async insert timeout ({} ms) exceeded", timeout_ms);
+
+            /// Throws when the query was killed or its `max_execution_time` passed; returns false
+            /// under `timeout_overflow_mode = 'break'`, in which case the query stops waiting.
+            if (process_list_elem && !process_list_elem->checkTimeLimit())
+                return {};
+        }
 
         auto progress_result = insert_future.get();
 

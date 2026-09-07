@@ -1,0 +1,42 @@
+-- 1. only wait_for_async_insert_timeout=2: the flush inherits it and is killed at ~2 s
+client error: TIMEOUT_EXCEEDED
+client: ExceptionWhileProcessing	159	fast
+flush: ExceptionWhileProcessing	159	fast
+async_insert_log: FlushError	1
+rows at the end of the chain: 0
+-- 2. max_execution_time=5 queued for 4 s: the flush gets the remaining ~1 s, not 5 s
+client error: TIMEOUT_EXCEEDED
+client: ExceptionWhileProcessing	159	fast
+flush: ExceptionWhileProcessing	159	fast
+-- 3a. max_execution_time=1 queued for 3 s: expired before the flush; the waiting client is released at 1 s
+client error: TIMEOUT_EXCEEDED
+client: ExceptionWhileProcessing	159	fast
+async_insert_log: FlushError	1
+flush: QueryFinish	0
+-- 3b. the same without waiting for the result: acknowledged data is not expired; the flush keeps max_execution_time from its own start
+client error: none
+client: QueryFinish	0	fast
+async_insert_log: FlushError	1
+flush: ExceptionWhileProcessing	159	fast
+expired counter grew by: 1
+rows at the end of the chain: 0
+-- 3c. a batch mixing an expired insert and a live one (preprocessed blocks): only the expired one is dropped
+second client error: none
+first client error: TIMEOUT_EXCEEDED
+first client: ExceptionWhileProcessing	159	fast
+first async_insert_log: FlushError	1
+second async_insert_log: Ok	0
+expired counter grew by: 1
+rows of the expired insert: 0
+rows of the live insert: 6
+-- 4. no timeouts; KILL QUERY on the waiting client releases it while the flush completes
+client error: QUERY_WAS_CANCELLED
+client: ExceptionWhileProcessing	394	fast
+flush: QueryFinish	0	fast
+async_insert_log: Ok	0
+rows at the end of the chain: 6
+-- 5. setting disabled: the client times out at 2 s and the flush runs to completion
+client error: TIMEOUT_EXCEEDED
+client: ExceptionWhileProcessing	159	fast
+flush: QueryFinish	0	ran to completion
+rows at the end of the chain: 6
