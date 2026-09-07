@@ -8,12 +8,6 @@
 namespace DB
 {
 
-namespace ErrorCodes
-{
-    extern const int TIMEOUT_EXCEEDED;
-    extern const int LOGICAL_ERROR;
-}
-
 /// Source, that allow to wait until processing of
 /// asynchronous insert for specified query_id will be finished.
 class WaitForAsyncInsertSource final : public ISource

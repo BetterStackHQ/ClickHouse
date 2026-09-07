@@ -6774,9 +6774,9 @@ Timeout for polling data from asynchronous insert queue
 If it is set to true, use adaptive busy timeout for asynchronous inserts
 )", 0) \
     DECLARE(Bool, async_insert_flush_timeout_from_queries, true, R"(
-Limits the flush of asynchronous inserts by the timeouts of the queries waiting for it (`wait_for_async_insert = 1`), counted from the moment each query was queued: the shorter of `max_execution_time` and `wait_for_async_insert_timeout`. Queries whose limit has already passed when the flush starts fail with `TIMEOUT_EXCEEDED` and are not flushed; a flush cut short by the limit fails regardless of `timeout_overflow_mode`.
+Limits the flush of asynchronous inserts by the timeouts of the queries waiting for it (`wait_for_async_insert = 1`), counted from the moment each query was queued: the shorter of `max_execution_time` and `wait_for_async_insert_timeout`. Queries whose limit has already passed when the flush starts fail with `TIMEOUT_EXCEEDED` and are not flushed.
 
-Queries that do not wait for the flush are not affected. When disabled, `max_execution_time` limits the flush from its own start and `wait_for_async_insert_timeout` does not limit it.
+Queries that do not wait for the flush, and queries with `timeout_overflow_mode = 'break'`, are not affected. When disabled, `max_execution_time` limits the flush from its own start and `wait_for_async_insert_timeout` does not limit it.
 )", 0) \
     DECLARE(Milliseconds, async_insert_busy_timeout_min_ms, 50, R"(
 If auto-adjusting is enabled through async_insert_use_adaptive_busy_timeout, minimum time to wait before dumping collected data per query since the first data appeared. It also serves as the initial value for the adaptive algorithm

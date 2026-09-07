@@ -172,7 +172,6 @@ namespace DB::ErrorCodes
     extern const int NETWORK_ERROR;
     extern const int SOCKET_TIMEOUT;
     extern const int SUPPORT_IS_DISABLED;
-    extern const int TIMEOUT_EXCEEDED;
     extern const int UNEXPECTED_PACKET_FROM_CLIENT;
     extern const int UNKNOWN_EXCEPTION;
     extern const int UNKNOWN_PACKET_FROM_CLIENT;
