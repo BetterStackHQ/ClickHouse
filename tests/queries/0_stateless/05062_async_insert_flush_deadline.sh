@@ -200,6 +200,22 @@ echo "flush: $(outcome "$F4" 100000)"
 echo "async_insert_log: $(async_log_status "${Q}_4")"
 echo "rows at the end of the chain: $(rows_with_id t3_deadline 4)"
 
+echo "-- 4h. the same over HTTP (the wait runs in the query pipeline rather than in the native handler)"
+printf '41\t1\n41\t2\n41\t3\n41\t4\n41\t5\n41\t6\n' | ${CLICKHOUSE_CURL} -sS \
+    "${CLICKHOUSE_URL}&query_id=${Q}_4h&async_insert=1&wait_for_async_insert=1&async_insert_use_adaptive_busy_timeout=0&async_insert_busy_timeout_min_ms=100&async_insert_busy_timeout_max_ms=100&function_sleep_max_microseconds_per_block=60000000&query=INSERT+INTO+src_deadline+FORMAT+TSV" \
+    --data-binary @- > "${TMP_OUT}.4h" 2>&1 &
+for _ in $(seq 1 100); do
+    if [ "$($CLICKHOUSE_CLIENT -q "SELECT count() FROM system.processes WHERE query_id = '${Q}_4h'")" = "1" ]; then break; fi
+    sleep 0.1
+done
+$CLICKHOUSE_CLIENT -q "KILL QUERY WHERE query_id = '${Q}_4h' ASYNC FORMAT Null"
+wait
+echo "client error: $(grep -oE 'QUERY_WAS_CANCELLED|TIMEOUT_EXCEEDED' "${TMP_OUT}.4h" | head -1)"
+echo "client: $(outcome "${Q}_4h" 4000)"
+F4H=$(flush_id_of "${Q}_4h")
+echo "flush: $(outcome "$F4H" 100000)"
+echo "rows at the end of the chain: $(rows_with_id t3_deadline 41)"
+
 echo "-- 5. setting disabled: the client times out at 2 s and the flush runs to completion"
 echo "client error: $(run_insert 5 src_deadline "wait_for_async_insert=1, wait_for_async_insert_timeout=2, async_insert_flush_timeout_from_queries=0, async_insert_busy_timeout_min_ms=100, async_insert_busy_timeout_max_ms=100" "${Q}_5")"
 echo "client: $(outcome "${Q}_5" 4000)"

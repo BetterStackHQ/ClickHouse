@@ -35,6 +35,11 @@ client: ExceptionWhileProcessing	394	fast
 flush: QueryFinish	0	fast
 async_insert_log: Ok	0
 rows at the end of the chain: 6
+-- 4h. the same over HTTP (the wait runs in the query pipeline rather than in the native handler)
+client error: QUERY_WAS_CANCELLED
+client: ExceptionWhileProcessing	394	fast
+flush: QueryFinish	0	fast
+rows at the end of the chain: 6
 -- 5. setting disabled: the client times out at 2 s and the flush runs to completion
 client error: TIMEOUT_EXCEEDED
 client: ExceptionWhileProcessing	159	fast
