@@ -1967,6 +1967,20 @@ void DatabaseCatalog::checkTableCanBeAddedWithNoCyclicDependencies(
 
     auto check = [&](TablesDependencyGraph & dependencies, const TableNamesSet & new_dependencies)
     {
+        std::vector<StorageID> new_dependency_ids;
+        new_dependency_ids.reserve(new_dependencies.size());
+        for (const auto & new_dependency : new_dependencies)
+            new_dependency_ids.emplace_back(new_dependency);
+
+        std::vector<std::pair<StorageID, std::vector<StorageID>>> replacements;
+        replacements.reserve(1);
+        replacements.emplace_back(table_id, std::move(new_dependency_ids));
+
+        if (!dependencies.hasCyclicDependenciesAfterReplacing(replacements))
+            return;
+
+        /// A cycle was found, so this statement will be rejected. Apply the change to the graph to describe the cycle
+        /// the same way as before, and revert the change afterwards.
         auto old_dependencies = dependencies.removeDependencies(table_id);
         dependencies.addDependencies(table_name, new_dependencies);
         auto restore_dependencies = [&]()
@@ -1976,18 +1990,24 @@ void DatabaseCatalog::checkTableCanBeAddedWithNoCyclicDependencies(
                 dependencies.addDependencies(table_id, old_dependencies);
         };
 
-        if (dependencies.hasCyclicDependencies())
-        {
-            auto cyclic_dependencies_description = dependencies.describeCyclicDependencies();
-            restore_dependencies();
-            throw Exception(
-                ErrorCodes::INFINITE_LOOP,
-                "Cannot add dependencies for '{}', because it will lead to cyclic dependencies: {}",
-                table_name.getFullName(),
-                cyclic_dependencies_description);
-        }
-
+        bool has_cyclic_dependencies = dependencies.hasCyclicDependencies();
+        String cyclic_dependencies_description;
+        if (has_cyclic_dependencies)
+            cyclic_dependencies_description = dependencies.describeCyclicDependencies();
         restore_dependencies();
+
+        if (!has_cyclic_dependencies)
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "Adding dependencies for '{}' was reported to lead to cyclic dependencies, "
+                "but there are no cyclic dependencies in the graph after adding them",
+                table_name.getFullName());
+
+        throw Exception(
+            ErrorCodes::INFINITE_LOOP,
+            "Cannot add dependencies for '{}', because it will lead to cyclic dependencies: {}",
+            table_name.getFullName(),
+            cyclic_dependencies_description);
     };
 
     check(referential_dependencies, new_referential_dependencies);
@@ -2000,6 +2020,16 @@ void DatabaseCatalog::checkTableCanBeRenamedWithNoCyclicDependencies(const Stora
 
     auto check = [&](TablesDependencyGraph & dependencies)
     {
+        std::vector<std::pair<StorageID, std::vector<StorageID>>> replacements;
+        replacements.reserve(2);
+        replacements.emplace_back(from_table_id, std::vector<StorageID>{});
+        replacements.emplace_back(to_table_id, dependencies.getDependencies(from_table_id));
+
+        if (!dependencies.hasCyclicDependenciesAfterReplacing(replacements))
+            return;
+
+        /// A cycle was found, so this statement will be rejected. Apply the change to the graph to describe the cycle
+        /// the same way as before, and revert the change afterwards.
         auto old_dependencies = dependencies.removeDependencies(from_table_id);
         dependencies.addDependencies(to_table_id, old_dependencies);
         auto restore_dependencies = [&]()
@@ -2008,19 +2038,26 @@ void DatabaseCatalog::checkTableCanBeRenamedWithNoCyclicDependencies(const Stora
             dependencies.addDependencies(from_table_id, old_dependencies);
         };
 
-        if (dependencies.hasCyclicDependencies())
-        {
-            auto cyclic_dependencies_description = dependencies.describeCyclicDependencies();
-            restore_dependencies();
-            throw Exception(
-                ErrorCodes::INFINITE_LOOP,
-                "Cannot rename '{}' to '{}', because it will lead to cyclic dependencies: {}",
-                from_table_id.getFullTableName(),
-                to_table_id.getFullTableName(),
-                cyclic_dependencies_description);
-        }
-
+        bool has_cyclic_dependencies = dependencies.hasCyclicDependencies();
+        String cyclic_dependencies_description;
+        if (has_cyclic_dependencies)
+            cyclic_dependencies_description = dependencies.describeCyclicDependencies();
         restore_dependencies();
+
+        if (!has_cyclic_dependencies)
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "Renaming '{}' to '{}' was reported to lead to cyclic dependencies, "
+                "but there are no cyclic dependencies in the graph after renaming",
+                from_table_id.getFullTableName(),
+                to_table_id.getFullTableName());
+
+        throw Exception(
+            ErrorCodes::INFINITE_LOOP,
+            "Cannot rename '{}' to '{}', because it will lead to cyclic dependencies: {}",
+            from_table_id.getFullTableName(),
+            to_table_id.getFullTableName(),
+            cyclic_dependencies_description);
     };
 
     check(referential_dependencies);
@@ -2033,6 +2070,16 @@ void DatabaseCatalog::checkTablesCanBeExchangedWithNoCyclicDependencies(const St
 
     auto check = [&](TablesDependencyGraph & dependencies)
     {
+        std::vector<std::pair<StorageID, std::vector<StorageID>>> replacements;
+        replacements.reserve(2);
+        replacements.emplace_back(table_id_1, dependencies.getDependencies(table_id_2));
+        replacements.emplace_back(table_id_2, dependencies.getDependencies(table_id_1));
+
+        if (!dependencies.hasCyclicDependenciesAfterReplacing(replacements))
+            return;
+
+        /// A cycle was found, so this statement will be rejected. Apply the change to the graph to describe the cycle
+        /// the same way as before, and revert the change afterwards.
         auto old_dependencies_1 = dependencies.removeDependencies(table_id_1);
         auto old_dependencies_2 = dependencies.removeDependencies(table_id_2);
         dependencies.addDependencies(table_id_1, old_dependencies_2);
@@ -2045,19 +2092,26 @@ void DatabaseCatalog::checkTablesCanBeExchangedWithNoCyclicDependencies(const St
             dependencies.addDependencies(table_id_2, old_dependencies_2);
         };
 
-        if (dependencies.hasCyclicDependencies())
-        {
-            auto cyclic_dependencies_description = dependencies.describeCyclicDependencies();
-            restore_dependencies();
-            throw Exception(
-                ErrorCodes::INFINITE_LOOP,
-                "Cannot exchange '{}' and '{}', because it will lead to cyclic dependencies: {}",
-                table_id_1.getFullTableName(),
-                table_id_2.getFullTableName(),
-                cyclic_dependencies_description);
-        }
-
+        bool has_cyclic_dependencies = dependencies.hasCyclicDependencies();
+        String cyclic_dependencies_description;
+        if (has_cyclic_dependencies)
+            cyclic_dependencies_description = dependencies.describeCyclicDependencies();
         restore_dependencies();
+
+        if (!has_cyclic_dependencies)
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "Exchanging '{}' and '{}' was reported to lead to cyclic dependencies, "
+                "but there are no cyclic dependencies in the graph after exchanging them",
+                table_id_1.getFullTableName(),
+                table_id_2.getFullTableName());
+
+        throw Exception(
+            ErrorCodes::INFINITE_LOOP,
+            "Cannot exchange '{}' and '{}', because it will lead to cyclic dependencies: {}",
+            table_id_1.getFullTableName(),
+            table_id_2.getFullTableName(),
+            cyclic_dependencies_description);
     };
 
     check(referential_dependencies);

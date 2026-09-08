@@ -1,0 +1,28 @@
+-- a view reading from its own dependent
+Code: 269. Cannot add dependencies for 'default.v', because it will lead to cyclic dependencies
+-- and the replaced view still reads its original source
+1	from source
+-- a dictionary replaced with one reading a view over it
+Code: 269. Cannot add dependencies for 'default.dict', because it will lead to cyclic dependencies
+Code: 269. Cannot add dependencies for 'default.dict', because it will lead to cyclic dependencies
+-- a dictionary reading itself
+Code: 269. Cannot rename 'default._tmp_replace' to 'default.self_dict', because it will lead to cyclic dependencies
+-- exchanging it with such a dictionary
+Code: 269. Cannot exchange 'default.dict' and 'default.dict_over_view', because it will lead to cyclic dependencies
+-- and renaming such a dictionary onto its name
+Code: 269. Cannot rename 'default.dict_over_view' to 'default.dict', because it will lead to cyclic dependencies
+-- an ALTER adding a default which reads a dictionary reading the altered table
+Code: 269. Cannot add dependencies for 'default.altered', because it will lead to cyclic dependencies
+-- replacing a view which a materialized view reads, with the same and with a different source
+2	from other source
+-- exchanging two views with disjoint sources
+2	from other source
+1	from source
+-- renaming a view
+2	from other source
+-- renaming a view which another view reads
+1	from source
+-- the reader refers to the old name, so creating a view with that name again makes it readable
+2	from other source
+-- a dictionary reading a table which does not exist yet
+1

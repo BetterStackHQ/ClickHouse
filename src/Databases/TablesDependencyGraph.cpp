@@ -19,6 +19,21 @@ namespace ErrorCodes
 namespace
 {
     constexpr const size_t CYCLIC_LEVEL = std::numeric_limits<size_t>::max();
+
+    /// Marks a vertex which is not one of the tables whose dependencies are replaced,
+    /// see `TablesDependencyGraph::hasCyclicDependenciesAfterReplacing`.
+    constexpr const size_t NOT_REPLACED = std::numeric_limits<size_t>::max();
+
+    /// Checks whether two identifiers refer to the same table: the UUIDs are compared if both identifiers have one,
+    /// and the qualified names are compared otherwise.
+    /// Two identifiers of a table which is in the graph are matched by its node instead, because `findNode` resolves
+    /// either spelling to that node, so this function is only the fallback for tables which are not in the graph.
+    bool isSameTable(const StorageID & left, const StorageID & right)
+    {
+        if (left.hasUUID() && right.hasUUID())
+            return left.uuid == right.uuid;
+        return (left.database_name == right.database_name) && (left.table_name == right.table_name);
+    }
 }
 
 
@@ -552,6 +567,103 @@ bool TablesDependencyGraph::hasCyclicDependencies() const
 {
     const auto & nodes_sorted_by_level = getNodesSortedByLevel();
     return !nodes_sorted_by_level.empty() && (nodes_sorted_by_level.back()->level == CYCLIC_LEVEL);
+}
+
+
+bool TablesDependencyGraph::hasCyclicDependenciesAfterReplacing(
+    const std::vector<std::pair<StorageID, std::vector<StorageID>>> & replacements) const
+{
+    /// A vertex of the graph with the replacements applied is either one of the tables whose dependencies are replaced,
+    /// identified by its index in `replacements`, or a node of this graph keeping its own dependencies.
+    /// `{NOT_REPLACED, nullptr}` means "no vertex", i.e. a dependency on a table which is neither in the graph nor replaced:
+    /// such a table has no dependencies of its own, so it can never be a part of a cycle.
+    struct Vertex
+    {
+        size_t replaced;
+        const Node * node;
+    };
+
+    const size_t num_replaced = replacements.size();
+
+    /// Nodes of the tables whose dependencies are replaced; null for a table which is not in the graph.
+    std::vector<const Node *> replaced_nodes(num_replaced);
+    for (size_t i = 0; i != num_replaced; ++i)
+        replaced_nodes[i] = findNode(replacements[i].first);
+
+    /// If the same table is specified more than once then only the last set of dependencies takes effect, the same way
+    /// as applying the replacements in order would leave it, so the last match wins in both lookups below.
+    auto make_vertex = [&](const Node * node) -> Vertex
+    {
+        Vertex res{NOT_REPLACED, node};
+        for (size_t i = 0; i != num_replaced; ++i)
+            if (replaced_nodes[i] == node)
+                res.replaced = i;
+        return res;
+    };
+
+    /// Applying the replacements would merge a dependency on a replaced table into that table's node (see `addOrUpdateNode`),
+    /// so the replaced tables are matched by their identifiers before the graph is searched.
+    auto find_vertex = [&](const StorageID & table_id) -> Vertex
+    {
+        size_t replaced = NOT_REPLACED;
+        for (size_t i = 0; i != num_replaced; ++i)
+            if (isSameTable(table_id, replacements[i].first))
+                replaced = i;
+        if (replaced != NOT_REPLACED)
+        {
+            /// Resolve through the node when there is one, so that both lookups always agree.
+            if (replaced_nodes[replaced])
+                return make_vertex(replaced_nodes[replaced]);
+            return {replaced, nullptr};
+        }
+        const auto * node = findNode(table_id);
+        if (!node)
+            return {NOT_REPLACED, nullptr};
+        return make_vertex(node);
+    };
+
+    std::vector<Vertex> stack;
+    std::unordered_set<const Node *> visited_nodes;
+    std::vector<bool> visited_replaced;
+
+    for (size_t i = 0; i != num_replaced; ++i)
+    {
+        /// The graph is acyclic apart from the replaced tables, so a cycle through the i-th table exists only if one of its
+        /// new dependencies leads back to it. Search forward from the new dependencies, following the replacements as well.
+        stack.clear();
+        visited_nodes.clear();
+        visited_replaced.assign(num_replaced, false);
+
+        for (const auto & dependency : replacements[i].second)
+            stack.push_back(find_vertex(dependency));
+
+        while (!stack.empty())
+        {
+            Vertex vertex = stack.back();
+            stack.pop_back();
+
+            if (vertex.replaced == i)
+                return true;
+
+            if (vertex.replaced != NOT_REPLACED)
+            {
+                if (visited_replaced[vertex.replaced])
+                    continue;
+                visited_replaced[vertex.replaced] = true;
+                for (const auto & dependency : replacements[vertex.replaced].second)
+                    stack.push_back(find_vertex(dependency));
+            }
+            else if (vertex.node) /// A dependency on a table which is not in the graph leads nowhere.
+            {
+                if (!visited_nodes.emplace(vertex.node).second)
+                    continue;
+                for (const auto * dependency_node : vertex.node->dependencies)
+                    stack.push_back(make_vertex(dependency_node));
+            }
+        }
+    }
+
+    return false;
 }
 
 

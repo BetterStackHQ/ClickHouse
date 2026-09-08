@@ -107,6 +107,17 @@ public:
     String describeCyclicDependencies() const;
     std::vector<StorageID> getTablesWithCyclicDependencies() const;
 
+    /// Returns true if replacing the dependencies of the specified tables with the specified sets of dependencies
+    /// would make any of those tables a part of a cyclic dependency. The graph itself is not modified, and neither are
+    /// its lazily calculated levels. If a table is specified more than once then only the last set of dependencies is
+    /// used, the same way as applying the replacements in order would leave it.
+    /// Only the part of the graph reachable from the new dependencies is visited, where `hasCyclicDependencies` sorts
+    /// the whole graph. In exchange this function only reports cycles through the specified tables: a cycle among other
+    /// tables is not reported, where `hasCyclicDependencies` reports any cycle in the graph. Such a cycle cannot be
+    /// created by these checks; it can only come from metadata written by a server which did not perform them.
+    /// Complexity: O(V' + E'), where V' and E' are the nodes and edges reachable from the new dependencies.
+    bool hasCyclicDependenciesAfterReplacing(const std::vector<std::pair<StorageID, std::vector<StorageID>>> & replacements) const;
+
     /// Returns a list of tables sorted by their dependencies:
     /// tables without dependencies first, then
     /// tables which depend on the tables without dependencies, then
