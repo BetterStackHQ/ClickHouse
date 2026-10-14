@@ -1,5 +1,6 @@
 #include <Storages/Cache/ObjectMetadataCache.h>
 
+#include <Core/ServerSettings.h>
 #include <Interpreters/Context.h>
 #include <Common/CurrentMetrics.h>
 
@@ -11,7 +12,10 @@ namespace CurrentMetrics
 namespace DB
 {
 
-static constexpr size_t DEFAULT_OBJECT_METADATA_CACHE_MAX_ENTRIES = 100000;
+namespace ServerSetting
+{
+    extern const ServerSettingsUInt64 object_metadata_cache_max_entries;
+}
 
 std::atomic<ObjectMetadataCache *> ObjectMetadataCache::created_instance = nullptr;
 
@@ -26,8 +30,7 @@ ObjectMetadataCache::ObjectMetadataCache(size_t max_entries)
 ObjectMetadataCache & ObjectMetadataCache::instance()
 {
     static ObjectMetadataCache cache(
-        Context::getGlobalContextInstance()->getConfigRef().getUInt(
-            "object_metadata_cache_max_entries", DEFAULT_OBJECT_METADATA_CACHE_MAX_ENTRIES));
+        Context::getGlobalContextInstance()->getServerSettings()[ServerSetting::object_metadata_cache_max_entries]);
     return cache;
 }
 
