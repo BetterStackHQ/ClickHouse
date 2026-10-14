@@ -2305,8 +2305,7 @@ UInt64 StorageMergeTree::getCurrentMutationVersion(UInt64 data_version, std::uni
 /// another partition, and then it is never applied to that part at all. Anything else (`UPDATE`,
 /// `DELETE`, `MATERIALIZE INDEX`, ...) needs a mutation to run, so a merge leaves it pending.
 /// Where a mutation command applies relative to one partition. `IN PARTITION p` is stored in
-/// `ASTAlterCommand::partition`, and `IN PARTITION p1, p2, ...` in `ASTAlterCommand::partitions`;
-/// both shapes are honoured per part by `canSkipMutationCommandForPart`.
+/// `ASTAlterCommand::partition` and honoured per part by `canSkipMutationCommandForPart`.
 enum class PartitionScope
 {
     Unscoped,
@@ -2325,16 +2324,6 @@ static PartitionScope getPartitionScope(
         return storage.getPartitionIDFromQuery(ASTPtr(alter->partition), context) == partition_id
             ? PartitionScope::ThisPartition
             : PartitionScope::OtherPartitions;
-    }
-
-    if (alter->partitions)
-    {
-        for (const auto & partition_ast : alter->partitions->children)
-        {
-            if (storage.getPartitionIDFromQuery(partition_ast, context) == partition_id)
-                return PartitionScope::ThisPartition;
-        }
-        return PartitionScope::OtherPartitions;
     }
 
     return PartitionScope::Unscoped;
