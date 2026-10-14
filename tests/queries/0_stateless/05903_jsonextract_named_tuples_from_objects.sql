@@ -63,11 +63,11 @@ SELECT JSONExtractKeysAndValues('{"k1":["a","b"],"k2":{"x":"c","y":"d"}}', 'Tupl
 
 -- Typed paths of the JSON data type are exempt from the setting: they keep
 -- the positional array fill regardless of its value.
-CREATE TABLE t_04930_json (j JSON(t Tuple(x Int64, y Int64))) ENGINE = MergeTree ORDER BY tuple();
-INSERT INTO t_04930_json VALUES ('{"t":[1,2]}');
-INSERT INTO t_04930_json VALUES ('{"t":{"x":3,"y":4}}');
+CREATE TABLE t_05903_json (j JSON(t Tuple(x Int64, y Int64))) ENGINE = MergeTree ORDER BY tuple();
+INSERT INTO t_05903_json VALUES ('{"t":[1,2]}');
+INSERT INTO t_05903_json VALUES ('{"t":{"x":3,"y":4}}');
 SET json_extract_named_tuples_as_objects = 0;
-INSERT INTO t_04930_json VALUES ('{"t":[5,6]}');
+INSERT INTO t_05903_json VALUES ('{"t":[5,6]}');
 SET json_extract_named_tuples_as_objects = 1;
-SELECT j.t FROM t_04930_json ORDER BY j.t.x;
-DROP TABLE t_04930_json;
+SELECT j.t FROM t_05903_json ORDER BY j.t.x;
+DROP TABLE t_05903_json;

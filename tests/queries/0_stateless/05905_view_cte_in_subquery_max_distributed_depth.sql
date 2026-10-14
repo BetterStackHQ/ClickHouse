@@ -8,12 +8,12 @@
 -- distributed read inside it tripped the `max_distributed_depth` check during
 -- planning of a plan that is discarded.
 
-DROP TABLE IF EXISTS t_04932;
-DROP VIEW IF EXISTS v_04932;
+DROP TABLE IF EXISTS t_05905;
+DROP VIEW IF EXISTS v_05905;
 
-CREATE TABLE t_04932 (k String, m String, v Float64) ENGINE = MergeTree ORDER BY k;
-CREATE VIEW v_04932 AS SELECT * FROM t_04932;
-INSERT INTO t_04932 VALUES ('a', 'm1', 5), ('a', 'm2', 200);
+CREATE TABLE t_05905 (k String, m String, v Float64) ENGINE = MergeTree ORDER BY k;
+CREATE VIEW v_05905 AS SELECT * FROM t_05905;
+INSERT INTO t_05905 VALUES ('a', 'm1', 5), ('a', 'm2', 200);
 
 SET max_distributed_depth = 1;
 
@@ -23,7 +23,7 @@ SET max_distributed_depth = 1;
 WITH c1 AS
 (
     SELECT k, m, sum(v) AS v
-    FROM remote('127.0.0.{1,2}', currentDatabase(), v_04932)
+    FROM remote('127.0.0.{1,2}', currentDatabase(), v_05905)
     GROUP BY k, m
 ),
 c2 AS
@@ -44,7 +44,7 @@ SET max_distributed_depth = 5;
 WITH c1 AS
 (
     SELECT k, m, sum(v) AS v
-    FROM remote('127.0.0.{1,2}', currentDatabase(), v_04932)
+    FROM remote('127.0.0.{1,2}', currentDatabase(), v_05905)
     GROUP BY k, m
 ),
 c2 AS
@@ -58,5 +58,5 @@ FROM c2
 WHERE k IN (SELECT k FROM c2 GROUP BY k HAVING max(r) > 0.001)
 ORDER BY k;
 
-DROP VIEW v_04932;
-DROP TABLE t_04932;
+DROP VIEW v_05905;
+DROP TABLE t_05905;

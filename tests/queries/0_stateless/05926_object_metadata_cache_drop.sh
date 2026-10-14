@@ -60,7 +60,7 @@ report 'read after the cache was dropped' "${run_id}_3"
 # statement does then is a null check on the cache, covered by reading the code.
 
 # The statement is guarded by its own privilege.
-user="user_05058_$CLICKHOUSE_DATABASE"
+user="user_05926_$CLICKHOUSE_DATABASE"
 ${CLICKHOUSE_CLIENT} -q "DROP USER IF EXISTS $user"
 ${CLICKHOUSE_CLIENT} -q "CREATE USER $user IDENTIFIED WITH no_password"
 

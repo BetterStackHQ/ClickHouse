@@ -42,10 +42,10 @@ SELECT bucket, sum(s) FROM t_mvpcg_dst2 GROUP BY bucket ORDER BY bucket;
 
 -- SQL user defined functions are inlined during analysis and must not block
 -- caching (their bodies are scanned by the volatility guard instead).
-CREATE FUNCTION IF NOT EXISTS 04928_udf_double AS x -> x * 2;
+CREATE FUNCTION IF NOT EXISTS 05902_udf_double AS x -> x * 2;
 CREATE TABLE t_mvpcg_dst3 (k UInt64, d UInt64) ENGINE = MergeTree ORDER BY k;
 CREATE MATERIALIZED VIEW t_mvpcg_mv3 TO t_mvpcg_dst3 AS
-    SELECT k, 04928_udf_double(k) AS d FROM t_mvpcg_src;
+    SELECT k, 05902_udf_double(k) AS d FROM t_mvpcg_src;
 INSERT INTO t_mvpcg_src VALUES (1000);
 INSERT INTO t_mvpcg_src VALUES (2000);
 SELECT k, d FROM t_mvpcg_dst3 ORDER BY k;
@@ -56,13 +56,13 @@ WHERE view_name = currentDatabase() || '.t_mvpcg_mv3';
 
 -- SQL UDF bodies are inlined into the stored view query at CREATE, so a
 -- redefinition does not affect existing views; the cache preserves exactly that.
-CREATE OR REPLACE FUNCTION 04928_udf_double AS x -> x * 3;
+CREATE OR REPLACE FUNCTION 05902_udf_double AS x -> x * 3;
 INSERT INTO t_mvpcg_src VALUES (3000);
 SELECT k, d FROM t_mvpcg_dst3 WHERE k = 3000;
 
 DROP VIEW t_mvpcg_mv3;
 DROP TABLE t_mvpcg_dst3;
-DROP FUNCTION IF EXISTS 04928_udf_double;
+DROP FUNCTION IF EXISTS 05902_udf_double;
 
 -- Reads besides the view source (here a join) are never cached, and results
 -- stay live: rows added to the joined table are visible to later inserts.

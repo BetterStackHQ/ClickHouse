@@ -13,8 +13,8 @@ CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 set -e
 
-Q="05062_${CLICKHOUSE_DATABASE}"
-TMP_OUT="${CLICKHOUSE_TMP}/05062_$$"
+Q="05929_${CLICKHOUSE_DATABASE}"
+TMP_OUT="${CLICKHOUSE_TMP}/05929_$$"
 
 function cleanup()
 {
