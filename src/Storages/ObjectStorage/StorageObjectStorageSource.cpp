@@ -425,11 +425,12 @@ std::shared_ptr<ObjectMetadata> lookupObjectMetadataCache(const String & cache_k
 
 void storeObjectMetadataCache(const String & cache_key, const ObjectMetadata & metadata)
 {
-    /// Only fully fetched metadata with a known size and an ETag can stand in for a real fetch:
-    /// downstream the size gates the filesystem cache stage and the ETag is part of its key. This
-    /// is the same admission test the filesystem cache applies to the ETag, so an object whose
-    /// metadata carries no content identifier (such as one from HDFS) is never remembered here.
-    if (cache_key.empty() || !metadata.is_fetched || !metadata.is_size_known || metadata.etag.empty())
+    /// Only fully fetched metadata with a known size and a strong ETag can stand in for a real
+    /// fetch: downstream the size gates the filesystem cache stage and the ETag is part of its key.
+    /// This is the same admission test the filesystem cache applies to the ETag, so an object whose
+    /// metadata carries no content identifier (such as one from HDFS) or only a weak one is never
+    /// remembered here.
+    if (cache_key.empty() || !metadata.is_fetched || !metadata.is_size_known || !metadata.isEtagUsableAsCacheKey())
         return;
     ObjectMetadataCache::instance().set(cache_key, std::make_shared<ObjectMetadata>(metadata));
 }
