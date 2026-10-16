@@ -7,10 +7,16 @@
 #include <Interpreters/ExpressionActions.h>
 #include <QueryPipeline/Pipe.h>
 #include <Storages/SelectQueryInfo.h>
+#include <Common/Exception.h>
 
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+    extern const int LOGICAL_ERROR;
+}
 
 StorageValues::StorageValues(
     const StorageID & table_id_,
@@ -68,6 +74,9 @@ Pipe StorageValues::read(
         return std::move(prepared_pipe);
     }
 
+    if (block_released)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "StorageValues: cannot read, the block was released");
+
     /// Get only required columns.
     Block block;
     for (const auto & name : column_names)
@@ -75,6 +84,12 @@ Pipe StorageValues::read(
 
     Chunk chunk(block.getColumns(), block.rows());
     return Pipe(std::make_shared<SourceFromSingleChunk>(std::make_shared<const Block>(block.cloneEmpty()), std::move(chunk)));
+}
+
+void StorageValues::releaseBlock()
+{
+    res_block = {};
+    block_released = true;
 }
 
 }

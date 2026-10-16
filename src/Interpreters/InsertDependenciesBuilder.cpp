@@ -706,11 +706,12 @@ private:
         /// We create a table with the same name as original table and the same alias columns,
         ///  but it will contain single block (that is INSERT-ed into main table).
         /// InterpreterSelectQuery will do processing of alias columns.
-        local_context->addViewSource(std::make_shared<StorageValues>(
+        auto view_source = std::make_shared<StorageValues>(
             source_id,
             source_metadata->getColumns(),
             std::move(data_block),
-            source_metadata->virtuals));
+            source_metadata->virtuals);
+        local_context->addViewSource(view_source);
 
         /// A `cached_entry` here is a negative one: this view select must not be cached,
         /// so run the plain path without attempting another capture.
@@ -739,7 +740,17 @@ private:
                 capture->cacheable = false;
                 capture->plan = {};
             }
-            capture->conversion_actions = conversion_actions;
+            if (capture->cacheable)
+            {
+                /// Only a positive entry is ever served, so only it needs the conversion actions.
+                capture->conversion_actions = conversion_actions;
+                /// The entry's actions reference function objects, and some functions keep the context
+                /// they were created with: a copy of `local_context`, which holds `view_source`. Nothing
+                /// reads the block through the storage any more (a cacheable select reads the view
+                /// source only through the leaves already turned into pipeline sources above, which
+                /// copied its columns), so drop it here rather than let the entry keep it alive.
+                view_source->releaseBlock();
+            }
             plan_cache->put(
                 *cache_variant_key,
                 std::move(capture),
@@ -924,7 +935,7 @@ private:
         try
         {
             /// Clone the node tree only. `QueryPlan::clone` also copies the plan's resource holder
-            /// (the interpreter context, storage holders and table locks of the query that built the
+            /// (the interpreter context, storage holders, table locks etc. of the query that built the
             /// plan), and an entry outlives that query: through its context the skeleton would keep
             /// the `StorageValues` and with it the whole block this insert pushed, for as long as the
             /// entry lives. A skeleton must own nothing of the capturing query; the hit path attaches
@@ -945,10 +956,9 @@ private:
             entry->cacheable = false;
             return entry;
         }
-        chassert(entry->plan.getInterpretersContexts().empty());
-
         for (size_t i = 0; i < source_nodes.size(); ++i)
             source_nodes[i]->step = std::move(saved_steps[i]);
+        chassert(entry->plan.getInterpretersContexts().empty());
         return entry;
     }
 

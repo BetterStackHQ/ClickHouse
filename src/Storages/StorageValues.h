@@ -48,9 +48,16 @@ public:
 
     bool parallelizeOutputAfterReading(ContextPtr) const override { return false; }
 
+    /// Drop the stored block. A read copies the block's columns into the pipe it returns, so once
+    /// every read of a planned query has happened the storage object only keeps the block alive
+    /// for whoever still references the storage (a context copy inside a function object, say).
+    /// Reading again after this is a logical error.
+    void releaseBlock();
+
 private:
     Block res_block;
     Pipe prepared_pipe;
+    bool block_released = false;
 };
 
 }
