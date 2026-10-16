@@ -923,7 +923,16 @@ private:
 
         try
         {
-            entry->plan = plan.clone();
+            /// Clone the node tree only. `QueryPlan::clone` also copies the plan's resource holder
+            /// (the interpreter context, storage holders and table locks of the query that built the
+            /// plan), and an entry outlives that query: through its context the skeleton would keep
+            /// the `StorageValues` and with it the whole block this insert pushed, for as long as the
+            /// entry lives. A skeleton must own nothing of the capturing query; the hit path attaches
+            /// each block's own context to the pipeline it builds.
+            entry->plan = QueryPlan::cloneSubtree(plan.getRootNode());
+            /// The execution limits are not part of the node tree; carry them over as `clone` would.
+            entry->plan.setMaxThreads(plan.getMaxThreads());
+            entry->plan.setConcurrencyControl(plan.getConcurrencyControl());
         }
         catch (const Exception & e)
         {
@@ -936,6 +945,7 @@ private:
             entry->cacheable = false;
             return entry;
         }
+        chassert(entry->plan.getInterpretersContexts().empty());
 
         for (size_t i = 0; i < source_nodes.size(); ++i)
             source_nodes[i]->step = std::move(saved_steps[i]);
@@ -967,7 +977,8 @@ private:
         plan.setConcurrencyControl(local_context->getSettingsRef()[Setting::use_concurrency_control]);
         auto builder = std::move(*plan.buildQueryPipeline(optimization_settings, build_settings, /*do_optimize=*/ false));
         /// The fresh path's pipeline keeps the per-block context alive through the
-        /// plan's resources; the cloned skeleton has none, so attach it explicitly.
+        /// plan's resources; the skeleton is captured without any (see `tryCaptureSkeleton`),
+        /// so attach this block's context explicitly.
         builder.addContext(local_context);
         return builder;
     }
