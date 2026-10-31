@@ -43,25 +43,25 @@ UInt8 compactTag()
 }
 
 template <typename T>
-String decimalDump(Int32 exponent)
+String decimalDump(Int32 exponent, Int32 value = 1)
 {
-    return "Decimal" + std::to_string(sizeof(T) * 8) + "_'1e" + std::to_string(exponent) + "'";
+    return "Decimal" + std::to_string(sizeof(T) * 8) + "_'" + std::to_string(value) + "e" + std::to_string(exponent) + "'";
 }
 
 template <typename T>
-String binaryDecimal(UInt32 scale, bool compact)
+String binaryDecimal(UInt32 scale, bool compact, Int32 value = 1)
 {
     WriteBufferFromOwnString out;
     if (compact)
     {
         writeBinary(compactTag<T>(), out);
         writeVarUInt(scale, out);
-        writeBinaryLittleEndian(T(1), out);
+        writeBinaryLittleEndian(T(value), out);
     }
     else
     {
         writeBinary(static_cast<UInt8>(Field(DecimalField<T>(T(1), 0)).getType()), out);
-        writeBinary(T(1), out);
+        writeBinary(T(value), out);
         writeBinary(scale, out);
     }
     return out.str();
@@ -91,19 +91,22 @@ TYPED_TEST(FieldDecimalScale, BinaryBoundaries)
         for (UInt32 scale : {UInt32(0), UInt32(1), max_scale})
         {
             SCOPED_TRACE(scale);
-            String bytes = binaryDecimal<TypeParam>(scale, compact);
-            ReadBufferFromString in(bytes);
-            Field field = compact ? decodeField(in) : readFieldBinary(in);
-            ASSERT_TRUE(in.eof());
-            const auto & decimal = field.template safeGet<DecimalField<TypeParam>>();
-            EXPECT_EQ(decimal.getScale(), scale);
-            EXPECT_EQ(decimal.getValue(), TypeParam(1));
-            WriteBufferFromOwnString out;
-            if (compact)
-                encodeField(field, out);
-            else
-                writeFieldBinary(field, out);
-            EXPECT_EQ(out.str(), bytes);
+            for (Int32 value : {-1, 0, 1})
+            {
+                String bytes = binaryDecimal<TypeParam>(scale, compact, value);
+                ReadBufferFromString in(bytes);
+                Field field = compact ? decodeField(in) : readFieldBinary(in);
+                ASSERT_TRUE(in.eof());
+                const auto & decimal = field.template safeGet<DecimalField<TypeParam>>();
+                EXPECT_EQ(decimal.getScale(), scale);
+                EXPECT_EQ(decimal.getValue(), TypeParam(value));
+                WriteBufferFromOwnString out;
+                if (compact)
+                    encodeField(field, out);
+                else
+                    writeFieldBinary(field, out);
+                EXPECT_EQ(out.str(), bytes);
+            }
         }
         for (UInt32 scale : {max_scale + 1, UInt32(77), UInt32(78), UInt32(0x80000000), std::numeric_limits<UInt32>::max()})
         {
@@ -121,10 +124,13 @@ TYPED_TEST(FieldDecimalScale, TextBoundaries)
     for (Int32 scale : {0, 1, max_scale})
     {
         SCOPED_TRACE(scale);
-        Field field = Field::restoreFromDump(decimalDump<TypeParam>(-scale));
-        const auto & decimal = field.template safeGet<DecimalField<TypeParam>>();
-        EXPECT_EQ(decimal.getScale(), static_cast<UInt32>(scale));
-        EXPECT_EQ(decimal.getValue(), TypeParam(1));
+        for (Int32 value : {-1, 0, 1})
+        {
+            Field field = Field::restoreFromDump(decimalDump<TypeParam>(-scale, value));
+            const auto & decimal = field.template safeGet<DecimalField<TypeParam>>();
+            EXPECT_EQ(decimal.getScale(), static_cast<UInt32>(scale));
+            EXPECT_EQ(decimal.getValue(), TypeParam(value));
+        }
     }
     for (Int32 scale : {max_scale + 1, 77, 78})
     {
@@ -141,20 +147,29 @@ TYPED_TEST(FieldDecimalScale, NestedBinaryValues)
     constexpr UInt32 invalid_scale = DecimalUtils::max_precision<TypeParam> + 1;
     for (bool compact : {false, true})
     {
-        for (bool tuple : {false, true})
+        for (auto type : {Field::Types::Array, Field::Types::Tuple, Field::Types::Object})
         {
             WriteBufferFromOwnString out;
             if (compact)
             {
-                writeBinary(UInt8(tuple ? 0x0e : 0x0d), out);
+                writeBinary(UInt8(type == Field::Types::Array ? 0x0d : type == Field::Types::Tuple ? 0x0e : 0x14), out);
                 writeVarUInt(1, out);
             }
             else
             {
-                writeBinary(static_cast<UInt8>(tuple ? Field::Types::Tuple : Field::Types::Array), out);
+                writeBinary(static_cast<UInt8>(type), out);
                 writeBinary(size_t(1), out);
             }
             String child = binaryDecimal<TypeParam>(invalid_scale, compact);
+            if (type == Field::Types::Object)
+            {
+                if (!compact)
+                {
+                    writeBinary(static_cast<UInt8>(child[0]), out);
+                    child.erase(0, 1);
+                }
+                writeStringBinary("key", out);
+            }
             out.write(child.data(), child.size());
             String bytes = out.str();
             ReadBufferFromString in(bytes);
@@ -178,6 +193,34 @@ TYPED_TEST(FieldDecimalScale, CompactBudgetAndEarlyRejection)
     ReadBufferFromString invalid(bytes);
     complexity = 0;
     expectInvalidScale([&] { return decodeField(invalid, complexity, 1); });
+}
+
+TYPED_TEST(FieldDecimalScale, TruncatedScale)
+{
+    for (bool compact : {false, true})
+    {
+        String bytes = binaryDecimal<TypeParam>(1, compact);
+        if (compact)
+        {
+            bytes.resize(2);
+            bytes[1] = static_cast<char>(0x80);
+        }
+        else
+            bytes.pop_back();
+        ReadBufferFromString in(bytes);
+        try
+        {
+            if (compact)
+                decodeField(in);
+            else
+                readFieldBinary(in);
+            FAIL() << "A truncated decimal scale was accepted";
+        }
+        catch (const Exception & e)
+        {
+            EXPECT_NE(e.code(), ErrorCodes::ARGUMENT_OUT_OF_BOUND);
+        }
+    }
 }
 
 TYPED_TEST(FieldDecimalScale, CustomSettingRejectsInvalidDump)
