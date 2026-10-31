@@ -9,6 +9,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int ARGUMENT_OUT_OF_BOUND;
     extern const int UNSUPPORTED_METHOD;
     extern const int INCORRECT_DATA;
 }
@@ -262,6 +263,12 @@ DecimalField<T> decodeDecimal(ReadBuffer & buf)
 {
     UInt32 scale = 0;
     readVarUInt(scale, buf);
+    if (scale > DecimalUtils::max_precision<T>)
+        throw Exception(
+            ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+            "Scale {} is out of bounds (max scale: {})",
+            scale,
+            DecimalUtils::max_precision<T>);
     T value{};
     readBinaryLittleEndian(value, buf);
     return DecimalField<T>(value, scale);

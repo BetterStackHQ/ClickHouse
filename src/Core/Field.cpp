@@ -25,6 +25,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+extern const int ARGUMENT_OUT_OF_BOUND;
 extern const int BAD_TYPE_OF_FIELD;
 extern const int BAD_GET;
 extern const int CANNOT_RESTORE_FROM_FIELD_DUMP;
@@ -485,6 +486,12 @@ static Field getBinaryValue(UInt8 type, ReadBuffer & buf)
             readBinary(value, buf);
             UInt32 scale = 0 ;
             readBinary(scale, buf);
+            if (scale > DecimalUtils::max_precision<Decimal32>)
+                throw Exception(
+                    ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                    "Scale {} is out of bounds (max scale: {})",
+                    scale,
+                    DecimalUtils::max_precision<Decimal32>);
             return DecimalField<Decimal32>(value, scale);
         }
         case Field::Types::Decimal64:
@@ -493,6 +500,12 @@ static Field getBinaryValue(UInt8 type, ReadBuffer & buf)
             readBinary(value, buf);
             UInt32 scale = 0;
             readBinary(scale, buf);
+            if (scale > DecimalUtils::max_precision<Decimal64>)
+                throw Exception(
+                    ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                    "Scale {} is out of bounds (max scale: {})",
+                    scale,
+                    DecimalUtils::max_precision<Decimal64>);
             return DecimalField<Decimal64>(value, scale);
         }
         case Field::Types::Decimal128:
@@ -501,6 +514,12 @@ static Field getBinaryValue(UInt8 type, ReadBuffer & buf)
             readBinary(value, buf);
             UInt32 scale = 0;
             readBinary(scale, buf);
+            if (scale > DecimalUtils::max_precision<Decimal128>)
+                throw Exception(
+                    ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                    "Scale {} is out of bounds (max scale: {})",
+                    scale,
+                    DecimalUtils::max_precision<Decimal128>);
             return DecimalField<Decimal128>(value, scale);
         }
         case Field::Types::Decimal256:
@@ -509,6 +528,12 @@ static Field getBinaryValue(UInt8 type, ReadBuffer & buf)
             readBinary(value, buf);
             UInt32 scale = 0;
             readBinary(scale, buf);
+            if (scale > DecimalUtils::max_precision<Decimal256>)
+                throw Exception(
+                    ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                    "Scale {} is out of bounds (max scale: {})",
+                    scale,
+                    DecimalUtils::max_precision<Decimal256>);
             return DecimalField<Decimal256>(value, scale);
         }
         case Field::Types::CustomType:
@@ -648,7 +673,15 @@ void readQuoted(DecimalField<T> & x, ReadBuffer & buf)
             throw Exception(ErrorCodes::DECIMAL_OVERFLOW, "Decimal math overflow");
     }
     else
+    {
         scale = -exponent;
+        if (scale > DecimalUtils::max_precision<T>)
+            throw Exception(
+                ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                "Scale {} is out of bounds (max scale: {})",
+                scale,
+                DecimalUtils::max_precision<T>);
+    }
     assertChar('\'', buf);
     x = DecimalField<T>{value, scale};
 }
