@@ -49,6 +49,21 @@ String IDataType::getPrettyName(size_t indent) const
 
 void IDataType::updateHash(SipHash & hash) const
 {
+    UInt128 digest = getHash();
+    hash.update(reinterpret_cast<const char *>(&digest), sizeof(digest));
+}
+
+UInt128 IDataType::getHash() const
+{
+    if (hash_cached.load(std::memory_order_acquire))
+    {
+        UInt128 cached;
+        cached.items[0] = cached_hash_low.load(std::memory_order_relaxed);
+        cached.items[1] = cached_hash_high.load(std::memory_order_relaxed);
+        return cached;
+    }
+
+    SipHash hash;
     if (custom_name)
     {
         hash.update(custom_name->getName().size());
@@ -59,6 +74,12 @@ void IDataType::updateHash(SipHash & hash) const
 
     hash.update(getTypeId());
     updateHashImpl(hash);
+    UInt128 digest = hash.get128();
+
+    cached_hash_low.store(digest.items[0], std::memory_order_relaxed);
+    cached_hash_high.store(digest.items[1], std::memory_order_relaxed);
+    hash_cached.store(true, std::memory_order_release);
+    return digest;
 }
 
 void IDataType::updateAvgValueSizeHint(const IColumn & column, double & avg_value_size_hint)
@@ -324,7 +345,12 @@ void IDataType::setCustomization(DataTypeCustomDescPtr custom_desc_) const
 {
     /// replace only if not null
     if (custom_desc_->name)
+    {
+        /// Customization happens right after construction, before the type is shared or hashed.
+        chassert(!hash_cached.load(std::memory_order_acquire));
         custom_name = std::move(custom_desc_->name);
+        hash_cached.store(false, std::memory_order_release);
+    }
 
     if (custom_desc_->serialization)
         custom_serialization = std::move(custom_desc_->serialization);

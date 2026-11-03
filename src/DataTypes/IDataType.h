@@ -6,6 +6,7 @@
 #include <DataTypes/IDataType_fwd.h>
 #include <DataTypes/Serializations/ISerialization.h>
 
+#include <atomic>
 #include <memory>
 
 #include <boost/noncopyable.hpp>
@@ -91,7 +92,13 @@ public:
     /// Storage type (e.g. Int64 for Interval)
     virtual TypeIndex getColumnType() const { return getTypeId(); }
 
+    /// Feeds the type's digest (see getHash) into `hash`.
     void updateHash(SipHash & hash) const;
+    /// 128-bit digest of the type, computed once per type object and cached: a data type is
+    /// immutable, so hashing a large nested type (e.g. a Tuple with hundreds of elements) on every
+    /// query-tree hash would repeat the same work. Thread-safe; concurrent first calls compute the
+    /// same value. A custom name must be set before the first call (setCustomization asserts it).
+    UInt128 getHash() const;
     virtual void updateHashImpl(SipHash & hash) const = 0;
 
     bool hasSubcolumn(std::string_view subcolumn_name) const;
@@ -347,6 +354,12 @@ protected:
     /// This is mutable to allow setting custom name and serialization on `const IDataType` post construction.
     mutable DataTypeCustomNamePtr custom_name;
     mutable SerializationPtr custom_serialization;
+
+    /// Cache for getHash(). `hash_cached` is set (release) after both halves are stored and
+    /// cleared when the custom name changes.
+    mutable std::atomic<bool> hash_cached{false};
+    mutable std::atomic<UInt64> cached_hash_low{0};
+    mutable std::atomic<UInt64> cached_hash_high{0};
 
 public:
     /// Customize this DataType
