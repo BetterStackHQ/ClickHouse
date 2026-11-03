@@ -1,5 +1,7 @@
 #include <Analyzer/ColumnNode.h>
 #include <Analyzer/IQueryTreeNode.h>
+#include <Analyzer/QueryNode.h>
+#include <Analyzer/UnionNode.h>
 
 #include <unordered_map>
 
@@ -164,6 +166,29 @@ size_t & getTreeHashWorkCounter()
     return counter;
 }
 
+namespace
+{
+
+/// The projection columns of a subquery reached only as a column source, or nullptr when the node
+/// is not a resolved QUERY or UNION. A union is represented by its first branch: equal unions have
+/// equal first branches, so isEqual-equal sources keep equal hashes without the common-supertype
+/// computation of UnionNode::computeProjectionColumns.
+const NamesAndTypes * getWeakSourceProjection(const IQueryTreeNode & node)
+{
+    if (const auto * query_node = node.as<QueryNode>())
+        return query_node->getProjectionColumns().empty() ? nullptr : &query_node->getProjectionColumns();
+
+    if (const auto * union_node = node.as<UnionNode>())
+    {
+        const auto & queries = union_node->getQueries().getNodes();
+        return queries.empty() ? nullptr : getWeakSourceProjection(*queries.front());
+    }
+
+    return nullptr;
+}
+
+}
+
 IQueryTreeNode::Hash IQueryTreeNode::getTreeHash(CompareOptions compare_options) const
 {
     /** Compute tree hash with this node as root.
@@ -211,14 +236,41 @@ IQueryTreeNode::Hash IQueryTreeNode::getTreeHash(CompareOptions compare_options)
 
         node_to_process->updateTreeHashImpl(hash_state, compare_options);
 
+        /// A subquery reached only as a column source is hashed by its interface (the projection
+        /// columns), like a table is hashed by its storage id, not by its body. QueryNode::updateTreeHashImpl
+        /// has already fed a QUERY node's projection; a UNION node's comes from its first branch.
+        /// Equal sources have equal projections, so isEqual-equal nodes keep equal hashes; different
+        /// subqueries with the same projection collide and are told apart by isEqual. Hashing the
+        /// body would make every lookup of a subquery column cost the size of that subquery.
+        if (is_weak_node)
+        {
+            if (const auto * projection_columns = getWeakSourceProjection(*node_to_process))
+            {
+                if (node_to_process->getNodeType() == QueryTreeNodeType::UNION)
+                {
+                    hash_state.update(projection_columns->size());
+                    for (const auto & projection_column : *projection_columns)
+                    {
+                        hash_state.update(projection_column.name.size());
+                        hash_state.update(projection_column.name);
+                        projection_column.type->updateHash(hash_state);
+                    }
+                }
+
+                continue;
+            }
+        }
+
         hash_state.update(node_to_process->children.size());
 
+        /// Children of a weak node stay weak: a JOIN or ARRAY JOIN source leads to its subqueries,
+        /// which are then hashed by their projection too.
         for (const auto & node_to_process_child : node_to_process->children)
         {
             if (!node_to_process_child)
                 continue;
 
-            nodes_to_process.emplace_back(node_to_process_child.get(), false);
+            nodes_to_process.emplace_back(node_to_process_child.get(), is_weak_node);
         }
 
         if (const auto * column_node = node_to_process->as<ColumnNode>())
