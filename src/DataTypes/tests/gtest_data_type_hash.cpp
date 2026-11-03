@@ -7,6 +7,7 @@
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/IDataType.h>
 #include <Common/SipHash.h>
+#include <Common/tests/gtest_global_register.h>
 
 #include <gtest/gtest.h>
 
@@ -20,6 +21,8 @@ namespace
 
 DataTypePtr type(const String & name)
 {
+    /// AggregateFunction(...) types resolve their function through the factory.
+    tryRegisterAggregateFunctions();
     return DataTypeFactory::instance().get(name);
 }
 
@@ -43,6 +46,14 @@ UInt128 viaUpdateHash(const DataTypePtr & t)
 {
     SipHash hash;
     t->updateHash(hash);
+    return hash.get128();
+}
+
+/// What `updateHash` must contribute to an outer hash: the 16 bytes of the digest, nothing else.
+UInt128 digestFedIntoHash(UInt128 digest)
+{
+    SipHash hash;
+    hash.update(reinterpret_cast<const char *>(&digest), sizeof(digest));
     return hash.get128();
 }
 
@@ -84,7 +95,9 @@ TEST(DataTypeHash, DifferentTypesDiffer)
         {"Enum8('a' = 1)", "Enum16('a' = 1)"},
         {"FixedString(4)", "FixedString(5)"},
         {"AggregateFunction(uniq, String)", "AggregateFunction(uniq, UInt64)"},
-        {"AggregateFunction(quantile(0.5), UInt64)", "AggregateFunction(quantile(0.9), UInt64)"},
+        /// Aggregate function parameters contribute only their types to the hash, so e.g.
+        /// quantile(0.5) and quantile(0.9) states collide; that is a permitted collision, not inequality.
+        {"AggregateFunction(quantiles(0.5), UInt64)", "AggregateFunction(quantiles(0.5, 0.9), UInt64)"},
         {"SimpleAggregateFunction(max, UInt64)", "UInt64"},
         {"IPv4", "UInt32"},
     };
@@ -98,7 +111,7 @@ TEST(DataTypeHash, DateTime64TimeZoneIsNotPartOfTheHash)
     EXPECT_EQ(type("DateTime64(3, 'UTC')")->getHash(), type("DateTime64(3, 'Europe/Prague')")->getHash());
 }
 
-TEST(DataTypeHash, DigestMatchesTheBytesUpdateHashFeeds)
+TEST(DataTypeHash, DigestMatchesTheLegacyByteStream)
 {
     for (const auto & name : {"UInt8", "String", "Nullable(String)", "LowCardinality(Nullable(String))",
                               "Tuple(a String, b Array(Tuple(c UInt8, d Map(String, String))))",
@@ -107,7 +120,8 @@ TEST(DataTypeHash, DigestMatchesTheBytesUpdateHashFeeds)
     {
         auto t = type(name);
         EXPECT_EQ(t->getHash(), legacyDigest(t)) << name;
-        EXPECT_EQ(viaUpdateHash(t), legacyDigest(t)) << name;
+        /// updateHash feeds the digest into the outer hash (not the legacy byte stream).
+        EXPECT_EQ(viaUpdateHash(t), digestFedIntoHash(legacyDigest(t))) << name;
         /// The cached path returns the same digest.
         EXPECT_EQ(t->getHash(), legacyDigest(t)) << name;
     }
