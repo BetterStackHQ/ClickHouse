@@ -306,6 +306,12 @@ public:
     void compileExpressions(size_t min_count_to_compile_expression, const std::unordered_set<const Node *> & lazy_executed_nodes = {});
 #endif
 
+    /// Rewrites groups of `JSON*` function calls that read the same `String` document with constant keys into
+    /// one function that parses each document once, see `JSONFunctionFusion.cpp`. Each member node stays in
+    /// place with its name and type and becomes an element of the fused result. Lazily executed nodes are
+    /// left alone: they run on a subset of the rows.
+    void fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes);
+
     using NodeMapping = std::unordered_map<const Node *, const Node *>;
     ActionsDAG clone(NodeMapping & old_to_new_nodes) const;
     ActionsDAG clone() const;

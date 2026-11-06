@@ -1,0 +1,23 @@
+<test>
+    <settings>
+        <allow_simdjson>1</allow_simdjson>
+    </settings>
+
+    <create_query>CREATE TABLE json_fusion_docs (raw String) ENGINE = Memory</create_query>
+    <fill_query>
+        INSERT INTO json_fusion_docs SELECT concat(
+            '{"service": "svc', toString(number % 50), '", "level": "', ['info', 'warn', 'error'][number % 3 + 1], '", "status": ', toString(200 + number % 300),
+            ', "duration_ms": ', toString(number % 10000), ', "user": {"id": ', toString(number), ', "name": "user', toString(number % 1000), '", "tags": ["a", "b", "c"]},',
+            ' "request": {"method": "GET", "path": "/api/v1/items/', toString(number), '", "size": ', toString(number % 65536), '},',
+            ' "message": "', repeat('x', number % 200), '", "host": "host', toString(number % 20), '", "ok": ', if(number % 7 = 0, 'false', 'true'), '}')
+        FROM numbers(500000)
+    </fill_query>
+
+    <query>SELECT max(cityHash64(JSONExtractString(raw, 'service'), JSONExtractString(raw, 'level'), JSONExtractInt(raw, 'status'), JSONExtractInt(raw, 'duration_ms'), JSONExtractUInt(raw, 'user', 'id'), JSONExtractString(raw, 'user', 'name'), JSONExtractString(raw, 'request', 'method'), JSONExtractString(raw, 'request', 'path'), JSONExtractInt(raw, 'request', 'size'), JSONExtractString(raw, 'message'), JSONExtractString(raw, 'host'), JSONExtractBool(raw, 'ok'), JSONHas(raw, 'user', 'tags'), JSONExtractRaw(raw, 'user', 'tags'), JSONExtract(raw, 'user', 'tags', 'Array(String)'), JSONExtractStringCaseInsensitive(raw, 'SERVICE'), JSONExtractIntCaseInsensitive(raw, 'STATUS'), JSONExtractString(raw, 'user', 'tags', 1), JSONLength(raw, 'user', 'tags'), JSONType(raw, 'ok'))) FROM json_fusion_docs SETTINGS fuse_json_functions = 1</query>
+    <query>SELECT max(cityHash64(JSONExtractString(raw, 'service'), JSONExtractString(raw, 'level'), JSONExtractInt(raw, 'status'), JSONExtractInt(raw, 'duration_ms'), JSONExtractUInt(raw, 'user', 'id'), JSONExtractString(raw, 'user', 'name'), JSONExtractString(raw, 'request', 'method'), JSONExtractString(raw, 'request', 'path'), JSONExtractInt(raw, 'request', 'size'), JSONExtractString(raw, 'message'), JSONExtractString(raw, 'host'), JSONExtractBool(raw, 'ok'), JSONHas(raw, 'user', 'tags'), JSONExtractRaw(raw, 'user', 'tags'), JSONExtract(raw, 'user', 'tags', 'Array(String)'), JSONExtractStringCaseInsensitive(raw, 'SERVICE'), JSONExtractIntCaseInsensitive(raw, 'STATUS'), JSONExtractString(raw, 'user', 'tags', 1), JSONLength(raw, 'user', 'tags'), JSONType(raw, 'ok'))) FROM json_fusion_docs SETTINGS fuse_json_functions = 0</query>
+    <query>SELECT max(cityHash64(JSONExtractString(raw, 'service'), JSONExtractInt(raw, 'status'))) FROM json_fusion_docs SETTINGS fuse_json_functions = 1</query>
+    <query>SELECT max(cityHash64(JSONExtractString(raw, 'service'), JSONExtractInt(raw, 'status'))) FROM json_fusion_docs SETTINGS fuse_json_functions = 0</query>
+    <query>SELECT max(cityHash64(JSONExtractString(raw, 'service'))) FROM json_fusion_docs SETTINGS fuse_json_functions = 1</query>
+
+    <drop_query>DROP TABLE IF EXISTS json_fusion_docs</drop_query>
+</test>

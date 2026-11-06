@@ -48,6 +48,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
         addSettingsChanges(settings_changes_history, "26.8",
         {
             {"use_object_metadata_cache", false, false, "New setting to cache object storage metadata (size, ETag, last modification time) across queries for immutable objects, avoiding a metadata request per object open."},
+            {"fuse_json_functions", false, true, "New setting to parse a JSON document once for all the `JSON*` functions of an expression that read it."},
             {"use_materialized_view_select_plan_cache", false, false, "New setting to cache the analyzed select plan of a materialized view across inserted blocks and inserts."},
             {"materialized_view_select_plan_cache_max_variants", 16, 16, "New setting bounding the number of select plan variants cached per materialized view."},
             {"json_extract_named_tuples_as_objects", false, true, "New setting: the `JSONExtract` family and typed JSON paths fill named tuples from JSON objects only, instead of the historical positional fill from arrays. Unnamed tuples still fill positionally."},

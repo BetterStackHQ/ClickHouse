@@ -37,13 +37,20 @@
 #include <Common/JSONParsers/SimdJSONParser.h>
 #include <Common/JSONParsers/RapidJSONParser.h>
 #include <Functions/FunctionHelpers.h>
+#include <Functions/JSONFunctionFusion.h>
 #include <Common/FunctionDocumentation.h>
+#include <Common/ProfileEvents.h>
 
 #include <Interpreters/Context.h>
 #include <Interpreters/castColumn.h>
 #include <IO/WriteBufferFromString.h>
 #include "config.h"
 
+
+namespace ProfileEvents
+{
+    extern const Event JSONFusedDocumentsParsed;
+}
 
 namespace DB
 {
@@ -57,6 +64,7 @@ namespace ErrorCodes
 {
 extern const int ILLEGAL_TYPE_OF_ARGUMENT;
 extern const int ILLEGAL_COLUMN;
+extern const int LOGICAL_ERROR;
 extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 }
 
@@ -101,9 +109,145 @@ concept PreparableWithCaseSensitivity = requires (T t)
 /// For example,
 /// select JSONExtractInt('{"a": "hello", "b": [-100, 200.0, 300]}', 'b', 1) = -100
 
-class FunctionJSONHelpers
+/// What a fused group of `JSON*` functions (see `JSONFunctionFusion.h`) runs per member on each parsed document.
+template <typename JSONParser>
+class IJSONFusedMember
 {
 public:
+    using Element = typename JSONParser::Element;
+
+    virtual ~IJSONFusedMember() = default;
+
+    virtual void prepareBlock(size_t input_rows_count) = 0;
+    virtual void insertRow(const Element & document, bool document_ok, size_t row) = 0;
+    virtual MutableColumnPtr takeResult() = 0;
+};
+
+class FunctionJSONHelpers
+{
+    /// Represents a move of a JSON iterator described by a single argument passed to a JSON function.
+    /// For example, the call JSONExtractInt('{"a": "hello", "b": [-100, 200.0, 300]}', 'b', 1)
+    /// contains two moves: {MoveType::ConstKey, "b"} and {MoveType::ConstIndex, 1}.
+    /// Keys and indices can be nonconst, in this case they are calculated for each row.
+    enum class MoveType : uint8_t
+    {
+        Key,
+        Index,
+        ConstKey,
+        ConstIndex,
+    };
+
+    struct Move
+    {
+        explicit Move(MoveType type_, size_t index_ = 0) : type(type_), index(index_) {}
+        Move(MoveType type_, const String & key_) : type(type_), key(key_) {}
+        MoveType type;
+        size_t index = 0;
+        String key;
+    };
+
+public:
+    /// One call's key path and `Impl`, with the result column of the block being executed:
+    /// `Executor::run` executes one of these per call, a fused function several per parsed document.
+    template <typename Name, template <typename> typename Impl, typename JSONParser, bool case_insensitive = false>
+    class Member
+    {
+    public:
+        using Element = typename JSONParser::Element;
+
+        Member(const ColumnsWithTypeAndName & arguments_, const DataTypePtr & result_type_)
+            : arguments(arguments_), result_type(result_type_)
+        {
+            size_t num_index_arguments = Impl<JSONParser>::getNumberOfIndexArguments(arguments);
+            moves = prepareMoves(Name::name, arguments, 1, num_index_arguments);
+
+            /// prepare() does Impl-specific preparation before handling each row.
+            if constexpr (PreparableWithCaseSensitivity<Impl<JSONParser>>)
+                impl.prepare(Name::name, arguments, result_type, case_insensitive);
+            else if constexpr (Preparable<Impl<JSONParser>>)
+                impl.prepare(Name::name, arguments, result_type);
+        }
+
+        void prepareBlock(size_t input_rows_count)
+        {
+            to = result_type->createColumn();
+            to->reserve(input_rows_count);
+        }
+
+        void insertRow(const Element & document, bool document_ok, size_t row, const FormatSettings & format_settings)
+        {
+            bool added_to_column = false;
+            if (document_ok)
+            {
+                /// Perform moves.
+                Element element;
+                std::string_view last_key;
+                bool moves_ok = performMoves<JSONParser, case_insensitive>(arguments, row, document, moves, element, last_key);
+
+                if (moves_ok)
+                    added_to_column = impl.insertResultToColumn(*to, element, last_key, format_settings, error);
+            }
+
+            /// We add default value (=null or zero) if something goes wrong, we don't throw exceptions in these JSON functions.
+            if (!added_to_column)
+                to->insertDefault();
+        }
+
+        MutableColumnPtr takeResult() { return std::move(to); }
+
+    private:
+        ColumnsWithTypeAndName arguments;
+        DataTypePtr result_type;
+        VectorWithMemoryTracking<Move> moves;
+        Impl<JSONParser> impl;
+        MutableColumnPtr to;
+        String error;
+    };
+
+    /// Parses each document of a `String` column once and runs every member of a fused group on it,
+    /// returning the members' result columns in their order. See `ActionsDAG::fuseJSONFunctions`.
+    template <typename JSONParser>
+    static Columns runFused(const IColumn & json_column, std::vector<std::unique_ptr<IJSONFusedMember<JSONParser>>> & members, size_t input_rows_count)
+    {
+        const auto * col_json_string = typeid_cast<const ColumnString *>(&json_column);
+        if (!col_json_string)
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Illegal column {}", json_column.getName());
+
+        const ColumnString::Chars & chars = col_json_string->getChars();
+        const ColumnString::Offsets & offsets = col_json_string->getOffsets();
+
+        for (auto & member : members)
+            member->prepareBlock(input_rows_count);
+
+        JSONParser parser;
+        if constexpr (Reservable<JSONParser>)
+        {
+            size_t max_size = calculateMaxSize(offsets);
+            if (max_size)
+                parser.reserve(max_size);
+        }
+
+        /// See `Executor::run` for the in-place parse of every row but the last.
+        const size_t last_row_in_place = offsets.size() - 1;
+
+        typename JSONParser::Element document;
+        for (size_t i = 0; i < input_rows_count; ++i)
+        {
+            std::string_view json{reinterpret_cast<const char *>(&chars[offsets[i - 1]]), offsets[i] - offsets[i - 1]};
+            bool document_ok = parser.parse(json, document, /*padded=*/ i < last_row_in_place);
+
+            for (auto & member : members)
+                member->insertRow(document, document_ok, i);
+        }
+        ProfileEvents::increment(ProfileEvents::JSONFusedDocumentsParsed, input_rows_count);
+
+        Columns results;
+        results.reserve(members.size());
+        for (auto & member : members)
+            results.push_back(member->takeResult());
+        return results;
+    }
+
     template <typename Name, template <typename> typename Impl, typename JSONParser, bool case_insensitive = false>
     class Executor
     {
@@ -111,9 +255,6 @@ public:
         static ColumnPtr run(const ColumnsWithTypeAndName & arguments, const DataTypePtr & result_type, size_t input_rows_count,
                             const FormatSettings & format_settings)
         {
-            MutableColumnPtr to{result_type->createColumn()};
-            to->reserve(input_rows_count);
-
             if (arguments.empty())
                 throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Function {} requires at least one argument", String(Name::name));
 
@@ -141,8 +282,8 @@ public:
             const ColumnString::Chars & chars = col_json_string->getChars();
             const ColumnString::Offsets & offsets = col_json_string->getOffsets();
 
-            size_t num_index_arguments = Impl<JSONParser>::getNumberOfIndexArguments(arguments);
-            VectorWithMemoryTracking<Move> moves = prepareMoves(Name::name, arguments, 1, num_index_arguments);
+            Member<Name, Impl, JSONParser, case_insensitive> member(arguments, result_type);
+            member.prepareBlock(input_rows_count);
 
             /// Preallocate memory in parser if necessary.
             JSONParser parser;
@@ -152,14 +293,6 @@ public:
                 if (max_size)
                     parser.reserve(max_size);
             }
-
-            Impl<JSONParser> impl;
-
-            /// prepare() does Impl-specific preparation before handling each row.
-            if constexpr (PreparableWithCaseSensitivity<Impl<JSONParser>>)
-                impl.prepare(Name::name, arguments, result_type, case_insensitive);
-            else if constexpr (Preparable<Impl<JSONParser>>)
-                impl.prepare(Name::name, arguments, result_type);
 
             using Element = typename JSONParser::Element;
 
@@ -175,7 +308,6 @@ public:
             /// is what the parser needs to read a document in place; the last row is parsed from a copy.
             const size_t last_row_in_place = offsets.size() - 1;
 
-            String error;
             for (size_t i = 0; i < input_rows_count; ++i)
             {
                 if (!col_json_const)
@@ -184,23 +316,9 @@ public:
                     document_ok = parser.parse(json, document, /*padded=*/ i < last_row_in_place);
                 }
 
-                bool added_to_column = false;
-                if (document_ok)
-                {
-                    /// Perform moves.
-                    Element element;
-                    std::string_view last_key;
-                    bool moves_ok = performMoves<JSONParser, case_insensitive>(arguments, i, document, moves, element, last_key);
-
-                    if (moves_ok)
-                        added_to_column = impl.insertResultToColumn(*to, element, last_key, format_settings, error);
-                }
-
-                /// We add default value (=null or zero) if something goes wrong, we don't throw exceptions in these JSON functions.
-                if (!added_to_column)
-                    to->insertDefault();
+                member.insertRow(document, document_ok, i, format_settings);
             }
-            return to;
+            return member.takeResult();
         }
 
     private:
@@ -344,27 +462,6 @@ public:
     };
 
 private:
-    /// Represents a move of a JSON iterator described by a single argument passed to a JSON function.
-    /// For example, the call JSONExtractInt('{"a": "hello", "b": [-100, 200.0, 300]}', 'b', 1)
-    /// contains two moves: {MoveType::ConstKey, "b"} and {MoveType::ConstIndex, 1}.
-    /// Keys and indices can be nonconst, in this case they are calculated for each row.
-    enum class MoveType : uint8_t
-    {
-        Key,
-        Index,
-        ConstKey,
-        ConstIndex,
-    };
-
-    struct Move
-    {
-        explicit Move(MoveType type_, size_t index_ = 0) : type(type_), index(index_) {}
-        Move(MoveType type_, const String & key_) : type(type_), key(key_) {}
-        MoveType type;
-        size_t index = 0;
-        String key;
-    };
-
     static VectorWithMemoryTracking<FunctionJSONHelpers::Move> prepareMoves(
         const char * function_name,
         const ColumnsWithTypeAndName & columns,
@@ -560,19 +657,25 @@ constexpr bool functionForcesTheReturnType()
     return std::is_same_v<Impl<void>, JSONExtractImpl<void>> || std::is_same_v<Impl<void>, JSONExtractKeysAndValuesImpl<void>>;
 }
 
+/// The format settings the `JSON*` functions execute with, derived from the ones captured when the function was built.
+static FormatSettings getFormatSettingsForExecution(FormatSettings format_settings)
+{
+    /// Don't escape forward slashes during converting JSON elements to raw string.
+    format_settings.json.escape_forward_slashes = false;
+    /// Don't insert default values on null during traversing the JSON element.
+    /// We allow to insert null only to Nullable columns in JSONExtract functions.
+    format_settings.null_as_default = false;
+    return format_settings;
+}
+
 template <typename Name, template<typename> typename Impl, bool case_insensitive = false>
 class ExecutableFunctionJSON final : public IExecutableFunction
 {
 
 public:
     explicit ExecutableFunctionJSON(const NullPresence & null_presence_, bool allow_simdjson_, const DataTypePtr & json_return_type_, const FormatSettings & format_settings_)
-        : null_presence(null_presence_), allow_simdjson(allow_simdjson_), json_return_type(json_return_type_), format_settings(format_settings_)
+        : null_presence(null_presence_), allow_simdjson(allow_simdjson_), json_return_type(json_return_type_), format_settings(getFormatSettingsForExecution(format_settings_))
     {
-        /// Don't escape forward slashes during converting JSON elements to raw string.
-        format_settings.json.escape_forward_slashes = false;
-        /// Don't insert default values on null during traversing the JSON element.
-        /// We allow to insert null only to Nullable columns in JSONExtract functions.
-        format_settings.null_as_default = false;
     }
 
     String getName() const override { return Name::name; }
@@ -648,8 +751,43 @@ private:
 };
 
 
+/// A member of a fused group: `Member` behind the type-erased per-row interface.
+template <typename Name, template <typename> typename Impl, typename JSONParser, bool case_insensitive>
+class JSONFusedMember final : public IJSONFusedMember<JSONParser>
+{
+public:
+    using Element = typename JSONParser::Element;
+
+    JSONFusedMember(const ColumnsWithTypeAndName & arguments, const DataTypePtr & result_type, const FormatSettings & format_settings_)
+        : member(arguments, result_type), format_settings(format_settings_)
+    {
+    }
+
+    void prepareBlock(size_t input_rows_count) override { member.prepareBlock(input_rows_count); }
+    void insertRow(const Element & document, bool document_ok, size_t row) override { member.insertRow(document, document_ok, row, format_settings); }
+    MutableColumnPtr takeResult() override { return member.takeResult(); }
+
+private:
+    FunctionJSONHelpers::Member<Name, Impl, JSONParser, case_insensitive> member;
+    FormatSettings format_settings;
+};
+
+/// `IJSONFusableFunction` plus what the fused function needs from a member: its per-row work for each parser.
+class IJSONFusableFunctionWithMembers : public IJSONFusableFunction
+{
+public:
+#if USE_SIMDJSON
+    virtual std::unique_ptr<IJSONFusedMember<SimdJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const = 0;
+#endif
+#if USE_RAPIDJSON
+    virtual std::unique_ptr<IJSONFusedMember<RapidJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const = 0;
+#else
+    virtual std::unique_ptr<IJSONFusedMember<DummyJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const = 0;
+#endif
+};
+
 template <typename Name, template<typename> typename Impl, bool case_insensitive = false>
-class FunctionBaseFunctionJSON final : public IFunctionBase
+class FunctionBaseFunctionJSON final : public IFunctionBase, public IJSONFusableFunctionWithMembers
 {
 public:
     explicit FunctionBaseFunctionJSON(
@@ -687,7 +825,55 @@ public:
         return std::make_unique<ExecutableFunctionJSON<Name, Impl, case_insensitive>>(null_presence, allow_simdjson, json_return_type, format_settings);
     }
 
+    /// A member runs `Executor::run` on its arguments as they are and its result column is used as is:
+    /// `ExecutableFunctionJSON::executeImpl` must have nothing to do around that call, so no NULL handling,
+    /// no `LowCardinality` conversion, no `JSON` type input and a result type equal to the parsed one.
+    bool isFusable(const ColumnsWithTypeAndName & arguments) const override
+    {
+        if (null_presence.has_nullable || null_presence.has_null_constant)
+            return false;
+
+        if (arguments.size() != argument_types.size() || arguments.empty() || !isString(arguments[0].type))
+            return false;
+
+        for (size_t i = 1; i < arguments.size(); ++i)
+        {
+            const auto & argument = arguments[i];
+            if (!argument.column || !isColumnConst(*argument.column) || argument.type->lowCardinality() || argument.type->isNullable())
+                return false;
+        }
+
+        return !return_type->lowCardinality() && return_type->equals(*json_return_type);
+    }
+
+    bool usesSimdJSON() const override { return allow_simdjson; }
+
+#if USE_SIMDJSON
+    std::unique_ptr<IJSONFusedMember<SimdJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const override
+    {
+        return createMemberImpl<SimdJSONParser>(arguments);
+    }
+#endif
+#if USE_RAPIDJSON
+    std::unique_ptr<IJSONFusedMember<RapidJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const override
+    {
+        return createMemberImpl<RapidJSONParser>(arguments);
+    }
+#else
+    std::unique_ptr<IJSONFusedMember<DummyJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const override
+    {
+        return createMemberImpl<DummyJSONParser>(arguments);
+    }
+#endif
+
 private:
+    template <typename JSONParser>
+    std::unique_ptr<IJSONFusedMember<JSONParser>> createMemberImpl(const ColumnsWithTypeAndName & arguments) const
+    {
+        return std::make_unique<JSONFusedMember<Name, Impl, JSONParser, case_insensitive>>(
+            arguments, json_return_type, getFormatSettingsForExecution(format_settings));
+    }
+
     NullPresence null_presence;
     bool allow_simdjson;
     DataTypes argument_types;
@@ -695,6 +881,96 @@ private:
     DataTypePtr json_return_type;
     FormatSettings format_settings;
 };
+
+/// `(String) -> Tuple(...)`: parses each document once and runs every member of a fused group on it.
+template <typename JSONParser>
+class ExecutableFunctionJSONFused final : public IExecutableFunction
+{
+public:
+    using Members = std::shared_ptr<const std::vector<JSONFusedMemberCall>>;
+
+    explicit ExecutableFunctionJSONFused(Members members_) : members(std::move(members_)) {}
+
+    String getName() const override { return "__jsonFused"; }
+    bool useDefaultImplementationForConstants() const override { return true; }
+
+    ColumnPtr executeImpl(const ColumnsWithTypeAndName & arguments, const DataTypePtr &, size_t input_rows_count) const override
+    {
+        /// The members' moves and extract trees are built per block, as `Executor::run` builds them per call:
+        /// one executable is shared by all the threads that execute the expression.
+        std::vector<std::unique_ptr<IJSONFusedMember<JSONParser>>> member_executors;
+        member_executors.reserve(members->size());
+        for (const auto & member : *members)
+            member_executors.push_back(
+                dynamic_cast<const IJSONFusableFunctionWithMembers &>(*member.function).createMember(member.arguments, static_cast<const JSONParser *>(nullptr)));
+
+        return ColumnTuple::create(FunctionJSONHelpers::runFused<JSONParser>(*arguments[0].column, member_executors, input_rows_count));
+    }
+
+private:
+    Members members;
+};
+
+class FunctionBaseJSONFused final : public IFunctionBase
+{
+public:
+    explicit FunctionBaseJSONFused(std::vector<JSONFusedMemberCall> members_)
+        : members(std::make_shared<const std::vector<JSONFusedMemberCall>>(std::move(members_)))
+    {
+        if (members->empty())
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "A fused JSON function needs at least one member");
+
+        DataTypes element_types;
+        element_types.reserve(members->size());
+        for (const auto & member : *members)
+        {
+            const auto & fusable = dynamic_cast<const IJSONFusableFunctionWithMembers &>(*member.function);
+            if (!fusable.isFusable(member.arguments) || fusable.usesSimdJSON() != usesSimdJSON())
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Function {} cannot be a member of a fused JSON function", member.function->getName());
+            element_types.push_back(member.function->getResultType());
+        }
+
+        argument_types = {members->front().arguments.front().type};
+        result_type = std::make_shared<DataTypeTuple>(element_types);
+    }
+
+    String getName() const override { return "__jsonFused"; }
+
+    void updateHash(SipHash & hash) const override
+    {
+        for (const auto & member : *members)
+            member.function->updateHash(hash);
+    }
+
+    const DataTypes & getArgumentTypes() const override { return argument_types; }
+    const DataTypePtr & getResultType() const override { return result_type; }
+    bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo &) const override { return true; }
+
+    ExecutableFunctionPtr prepare(const ColumnsWithTypeAndName &) const override
+    {
+#if USE_SIMDJSON
+        if (usesSimdJSON())
+            return std::make_unique<ExecutableFunctionJSONFused<SimdJSONParser>>(members);
+#endif
+#if USE_RAPIDJSON
+        return std::make_unique<ExecutableFunctionJSONFused<RapidJSONParser>>(members);
+#else
+        return std::make_unique<ExecutableFunctionJSONFused<DummyJSONParser>>(members);
+#endif
+    }
+
+private:
+    bool usesSimdJSON() const { return dynamic_cast<const IJSONFusableFunction &>(*members->front().function).usesSimdJSON(); }
+
+    std::shared_ptr<const std::vector<JSONFusedMemberCall>> members;
+    DataTypes argument_types;
+    DataTypePtr result_type;
+};
+
+FunctionBasePtr createFusedJSONFunction(std::vector<JSONFusedMemberCall> members)
+{
+    return std::make_shared<FunctionBaseJSONFused>(std::move(members));
+}
 
 /// We use IFunctionOverloadResolver instead of IFunction to handle non-default NULL processing.
 /// Both NULL and JSON NULL should generate NULL value. If any argument is NULL, return NULL.

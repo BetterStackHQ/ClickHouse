@@ -59,6 +59,11 @@ ExpressionActions::ExpressionActions(ActionsDAG actions_dag_, const ExpressionAc
     /// It's important to determine lazy executed nodes before compiling expressions.
     std::unordered_set<const ActionsDAG::Node *> lazy_executed_nodes = processShortCircuitFunctions(actions_dag, settings.short_circuit_function_evaluation);
 
+    /// Like compilation, only in the actions that execute a query: the actions of a storage (a sorting key,
+    /// an index, a TTL) are read back as a DAG by the index analysis and must keep their original nodes.
+    if (settings.fuse_json_functions && settings.compile_expressions == CompileExpressions::yes)
+        actions_dag.fuseJSONFunctions(lazy_executed_nodes);
+
 #if USE_EMBEDDED_COMPILER
     if (settings.can_compile_expressions && settings.compile_expressions == CompileExpressions::yes)
         actions_dag.compileExpressions(settings.min_count_to_compile_expression, lazy_executed_nodes);

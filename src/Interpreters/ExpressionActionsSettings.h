@@ -33,6 +33,8 @@ struct ExpressionActionsSettings
     ShortCircuitFunctionEvaluation short_circuit_function_evaluation = ShortCircuitFunctionEvaluation::DISABLE;
 
     bool enable_lazy_columns_replication = false;
+
+    bool fuse_json_functions = false;
 };
 
 }

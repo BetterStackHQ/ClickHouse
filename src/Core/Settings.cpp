@@ -4555,6 +4555,11 @@ Reject patterns which will likely be expensive to evaluate with hyperscan (due t
     DECLARE(Bool, allow_simdjson, true, R"(
 Allow using simdjson library in 'JSON*' functions if AVX2 instructions are available. If disabled rapidjson will be used.
 )", 0) \
+    DECLARE(Bool, fuse_json_functions, true, R"(
+Execute the `JSON*` functions (`JSONExtract`, `JSONExtractString`, `JSONHas`, ...) of an expression that read the same `String` column with one parse of each document instead of one parse per call. The result of every call is unchanged; only the time spent parsing is.
+
+A call keeps its own parse when its document argument is `Nullable`, `LowCardinality` or of the `JSON` type, when a key or index argument is not constant, or when it is an argument of a short-circuit function that is evaluated lazily.
+)", 0) \
     DECLARE(Bool, allow_introspection_functions, false, R"(
 Enables or disables [introspection functions](/reference/functions/regular-functions/introspection) for query profiling.
 
