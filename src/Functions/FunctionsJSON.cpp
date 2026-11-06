@@ -171,13 +171,17 @@ public:
                 document_ok = parser.parse(json, document);
             }
 
+            /// Every row but the last is followed by the next row and the column's right padding, which
+            /// is what the parser needs to read a document in place; the last row is parsed from a copy.
+            const size_t last_row_in_place = offsets.size() - 1;
+
             String error;
             for (size_t i = 0; i < input_rows_count; ++i)
             {
                 if (!col_json_const)
                 {
                     std::string_view json{reinterpret_cast<const char *>(&chars[offsets[i - 1]]), offsets[i] - offsets[i - 1]};
-                    document_ok = parser.parse(json, document);
+                    document_ok = parser.parse(json, document, /*padded=*/ i < last_row_in_place);
                 }
 
                 bool added_to_column = false;

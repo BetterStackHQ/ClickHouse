@@ -8,7 +8,7 @@ namespace ErrorCodes
 extern const int NOT_IMPLEMENTED;
 }
 
-bool DummyJSONParser::parse(std::string_view, Element &)
+bool DummyJSONParser::parse(std::string_view, Element &, bool)
 {
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Functions JSON* are not supported");
 }

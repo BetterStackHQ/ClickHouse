@@ -179,7 +179,7 @@ struct RapidJSONParser
     };
 
     /// Parses a JSON document, returns the reference to its root element if succeeded.
-    bool parse(std::string_view json, Element & result)
+    bool parse(std::string_view json, Element & result, bool /*padded*/ = false)
     {
         rapidjson::MemoryStream ms(json.data(), json.size());
         rapidjson::EncodedInputStream<rapidjson::UTF8<>, rapidjson::MemoryStream> is(ms);

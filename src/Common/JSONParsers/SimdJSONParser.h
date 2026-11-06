@@ -427,9 +427,15 @@ struct SimdJSONParser
     };
 
     /// Parses a JSON document, returns the reference to its root element if succeeded.
-    bool parse(std::string_view json, Element & result)
+    /// simdjson reads up to `SIMDJSON_PADDING` bytes past the end of the document, so by default
+    /// it first copies the document into its own padded buffer. A caller that guarantees those
+    /// bytes are readable (the document is followed by at least one more byte of a
+    /// `PaddedPODArray`, whose right padding supplies the rest) passes `padded` to parse the
+    /// document in place and skip the copy.
+    bool parse(std::string_view json, Element & result, bool padded = false)
     {
-        auto document = parser.parse(json.data(), json.size());
+        static_assert(PADDING_FOR_SIMD >= simdjson::SIMDJSON_PADDING, "PaddedPODArray right padding plus one following byte must cover SIMDJSON_PADDING");
+        auto document = parser.parse(json.data(), json.size(), /*realloc_if_needed=*/ !padded);
         if (document.error())
             return false;
 
