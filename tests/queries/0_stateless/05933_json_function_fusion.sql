@@ -114,7 +114,7 @@ SELECT 'one row per block fused minus plain', count() FROM (SELECT * FROM json_w
 SELECT 'one row per block plain minus fused', count() FROM (SELECT * FROM json_wide_plain WHERE id < 100 EXCEPT SELECT * FROM json_wide_block1_fused);
 
 -- A document column stored with sparse serialization.
-CREATE TABLE json_sparse (id UInt32, raw String) ENGINE = MergeTree ORDER BY id SETTINGS ratio_of_defaults_for_sparse_serialization = 0.5;
+CREATE TABLE json_sparse (id UInt32, raw String) ENGINE = MergeTree ORDER BY id SETTINGS ratio_of_defaults_for_sparse_serialization = 0.5, compute_exact_num_defaults_for_sparse_columns = 1;
 INSERT INTO json_sparse SELECT number, if(number % 20 = 0, concat('{"a": "s', toString(number), '", "n": ', toString(number), '}'), '') FROM numbers(2000);
 SELECT DISTINCT serialization_kind FROM system.parts_columns WHERE database = currentDatabase() AND table = 'json_sparse' AND column = 'raw' AND active;
 CREATE TABLE json_sparse_fused ENGINE = Memory AS SELECT /* tag:sparse_fused */ id, JSONExtractString(raw, 'a') AS a, JSONExtractInt(raw, 'n') AS n, isValidJSON(raw) AS valid FROM json_sparse SETTINGS fuse_json_functions = 1;
