@@ -244,6 +244,8 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
 
     /// Non-trivial atoms from left to right.
     std::vector<const ActionsDAG::Node *> atoms;
+    /// A trivial atom (a column, e.g. an atom split off before) in front of the first non-trivial one.
+    bool trivial_atom_in_front = false;
     std::stack<const ActionsDAG::Node *> nodes;
     nodes.push(filter);
     while (!nodes.empty())
@@ -262,6 +264,8 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
 
         if (!isTrivialSubtree(node))
             atoms.push_back(node);
+        else if (atoms.empty())
+            trivial_atom_in_front = true;
     }
 
     /// Do not split subtree if it's the last non-trivial one.
@@ -283,8 +287,9 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
                 documents.insert(atom_documents.begin(), atom_documents.end());
             }
 
-            /// The run is the whole chain: nothing is left to split it from.
-            if (group.size() == atoms.size())
+            /// The run is the whole chain: nothing is left to split it from, unless a trivial atom in front of it
+            /// would be the argument of `and` that is executed on every row, with every call of the run lazy behind it.
+            if (group.size() == atoms.size() && !trivial_atom_in_front)
                 return {};
 
             if (group.size() > 1)

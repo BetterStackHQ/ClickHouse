@@ -137,7 +137,7 @@ bool fuseJSONFunctionsAcrossAtoms(const ExpressionActionsSettings & settings)
     return settings.fuse_json_functions && settings.short_circuit_function_evaluation != ShortCircuitFunctionEvaluation::DISABLE;
 }
 
-void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes)
+void ActionsDAG::fuseJSONFunctions(std::unordered_set<const Node *> & lazy_executed_nodes)
 {
     /// Group the fusable calls by the node that produces their document, in the order the calls were added.
     std::unordered_map<const Node *, std::vector<FusableCall>> groups;
@@ -167,8 +167,9 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
         /// a group of such calls alone would parse the documents they skip. Next to a call that runs on
         /// every row the document is parsed for every row anyway, so the lazily executed call joins the
         /// group: only its extraction runs on more rows, which is cheap next to the parse and cannot throw.
-        /// Its node stays lazily executed and takes the element of the fused result on the rows it is
-        /// asked for.
+        /// Its node becomes the element function, a pointer copy that is executed on every row as well: kept
+        /// lazy, it would capture the whole fused result for the masked execution and filter every element.
+        /// The parent that was lazy because of it stays lazy, with the element's column as its argument.
         if (std::ranges::all_of(group, [](const auto & call) { return call.lazy_executed; }))
             continue;
 
@@ -199,6 +200,7 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
             node.function = element->prepare(fused_arguments);
             node.function_base = std::move(element);
             node.children = {&fused_node};
+            lazy_executed_nodes.erase(&node);
         }
 
         ProfileEvents::increment(ProfileEvents::JSONFunctionsFused, group.size());

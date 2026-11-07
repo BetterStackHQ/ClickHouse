@@ -25,6 +25,10 @@ SELECT /* tag:where_two_atoms_plain */ count() FROM json_atoms_memory WHERE JSON
 SELECT /* tag:where_run */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND JSONExtractString(raw, 'message', 'reason') = 'r1' AND JSONExtractString(raw, 'level') = 'warn' AND JSONExtractString(other, 'env') = 'production';
 SELECT /* tag:where_run_plain */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND JSONExtractString(raw, 'message', 'reason') = 'r1' AND JSONExtractString(raw, 'level') = 'warn' AND JSONExtractString(other, 'env') = 'production' SETTINGS fuse_json_functions = 0;
 
+-- Cheap atoms in front of a run that is the rest of the chain: the run is still its own filter, so that its
+-- first call is not lazy behind a column that `and` executes on every row.
+SELECT /* tag:where_cheap_then_run */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND id < 9000 AND JSONExtractString(raw, 'event') = 'email.failed' AND JSONExtractString(raw, 'level') = 'warn';
+
 -- An atom on another document between two atoms on `raw` ends the run: the atoms keep their order.
 SELECT /* tag:where_interleaved */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'event') = 'email.failed' AND JSONExtractString(other, 'env') = 'production' AND JSONExtractString(raw, 'level') = 'warn';
 
@@ -52,6 +56,9 @@ SELECT /* tag:lazy_with_eager */ sum(cityHash64(JSONExtractString(raw, 'event'),
 SELECT /* tag:lazy_with_eager_plain */ sum(cityHash64(JSONExtractString(raw, 'event'), if(JSONHas(raw, 'n'), JSONExtractInt(raw, 'n'), -1))) FROM json_atoms_memory SETTINGS fuse_json_functions = 0;
 SELECT /* tag:lazy_alone */ sum(cityHash64(id, if(id % 2 = 0, JSONExtractInt(raw, 'n'), 0), if(id % 3 = 0, JSONExtractString(raw, 'event'), ''))) FROM json_atoms_memory;
 SELECT /* tag:lazy_alone_plain */ sum(cityHash64(id, if(id % 2 = 0, JSONExtractInt(raw, 'n'), 0), if(id % 3 = 0, JSONExtractString(raw, 'event'), ''))) FROM json_atoms_memory SETTINGS fuse_json_functions = 0;
+-- A lazily executed call whose extraction is not scalar, and one whose conversion fails on malformed rows.
+SELECT /* tag:lazy_raw */ sum(cityHash64(JSONExtractString(raw, 'event'), if(id % 10 = 0, JSONExtractRaw(raw, 'message'), ''), if(JSONHas(raw, 'n'), JSONExtract(raw, 'n', 'DateTime'), toDateTime(0)))) FROM json_atoms_memory;
+SELECT /* tag:lazy_raw_plain */ sum(cityHash64(JSONExtractString(raw, 'event'), if(id % 10 = 0, JSONExtractRaw(raw, 'message'), ''), if(JSONHas(raw, 'n'), JSONExtract(raw, 'n', 'DateTime'), toDateTime(0)))) FROM json_atoms_memory SETTINGS fuse_json_functions = 0;
 SELECT /* tag:lazy_force_enable */ sum(cityHash64(JSONExtractString(raw, 'event'), if(JSONHas(raw, 'n'), JSONExtractInt(raw, 'n'), -1))) FROM json_atoms_memory SETTINGS short_circuit_function_evaluation = 'force_enable';
 
 -- The split as the pipeline builds it (a Filter step; the runs are not shown in the pretty form).

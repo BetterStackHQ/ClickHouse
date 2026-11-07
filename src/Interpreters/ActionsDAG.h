@@ -310,8 +310,9 @@ public:
     /// one function that parses each document once, see `JSONFunctionFusion.cpp`. Each member node stays in
     /// place with its name and type and becomes an element of the fused result. A lazily executed node (an
     /// argument of a short-circuit function, run on a subset of the rows) joins a group only next to a node
-    /// that is executed on every row, whose parse it shares; it stays lazily executed as an element.
-    void fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes);
+    /// that is executed on every row, whose parse it shares; as an element it is executed on every row too
+    /// (a pointer copy) and is removed from `lazy_executed_nodes`.
+    void fuseJSONFunctions(std::unordered_set<const Node *> & lazy_executed_nodes);
     /// The node that produces the document of a `JSON*` call that `fuseJSONFunctions` can fuse, or null.
     static const Node * getFusableJSONDocument(const Node & node);
 
