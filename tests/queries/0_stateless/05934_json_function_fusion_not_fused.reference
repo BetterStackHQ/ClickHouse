@@ -1,0 +1,48 @@
+1	nx	3
+2	\N	\N
+3	\N	\N
+1	lcx	4
+2	lcp	40
+3		0
+1	jx	5
+2	jp	50
+3		0
+1	c	7
+2	c	7
+3	c	7
+1	x	0
+2	10	10
+3		0
+1	x	1
+2	p	10
+3		0
+1	x	1
+2	p	10
+3		0
+1	x
+2	p
+3	
+1	x	y
+2	p	q
+3		
+1		0
+2		0
+3		0
+1	x	1
+2	p	10
+3		
+1	x	x	1	y
+2	p	10	10	q
+3			0	
+tag:nullable_input	0
+tag:low_cardinality_input	0
+tag:json_type_input	0
+tag:constant_document	0
+tag:non_constant_key	0
+tag:nullable_key	0
+tag:low_cardinality_result	0
+tag:single_call	0
+tag:two_columns	0
+tag:simple_json	0
+tag:sql_json_path	0
+tag:mixed	2

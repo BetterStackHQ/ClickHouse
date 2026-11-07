@@ -13,8 +13,11 @@ SELECT /* tag:if_force_enable */ sum(cityHash64(id, if(JSONHas(raw, 'a'), JSONEx
 SELECT /* tag:if_disable */ sum(cityHash64(id, if(JSONHas(raw, 'a'), JSONExtractString(raw, 'a'), JSONExtractString(raw, 'b')))) FROM json_sc SETTINGS short_circuit_function_evaluation = 'disable';
 SELECT /* tag:if_plain */ sum(cityHash64(id, if(JSONHas(raw, 'a'), JSONExtractString(raw, 'a'), JSONExtractString(raw, 'b')))) FROM json_sc SETTINGS fuse_json_functions = 0;
 
+-- A WHERE conjunction is split into one filter step per atom (`query_plan_merge_filters`), so calls spread over the atoms
+-- are in different expressions and are not fused; with the split off and no lazy arguments they are.
 SELECT /* tag:and_enable */ count() FROM json_sc WHERE JSONHas(raw, 'a') AND JSONExtractInt(raw, 'n') % 2 = 0 AND JSONExtractString(raw, 'a') != '' SETTINGS short_circuit_function_evaluation = 'enable';
 SELECT /* tag:and_disable */ count() FROM json_sc WHERE JSONHas(raw, 'a') AND JSONExtractInt(raw, 'n') % 2 = 0 AND JSONExtractString(raw, 'a') != '' SETTINGS short_circuit_function_evaluation = 'disable';
+SELECT /* tag:and_disable_single_filter */ count() FROM json_sc WHERE JSONHas(raw, 'a') AND JSONExtractInt(raw, 'n') % 2 = 0 AND JSONExtractString(raw, 'a') != '' SETTINGS short_circuit_function_evaluation = 'disable', query_plan_merge_filters = 0;
 SELECT /* tag:and_plain */ count() FROM json_sc WHERE JSONHas(raw, 'a') AND JSONExtractInt(raw, 'n') % 2 = 0 AND JSONExtractString(raw, 'a') != '' SETTINGS fuse_json_functions = 0;
 
 SELECT /* tag:multi_if_enable */ sum(cityHash64(id, multiIf(JSONExtractInt(raw, 'n') % 3 = 0, JSONExtractString(raw, 'a'), JSONExtractInt(raw, 'n') % 3 = 1, JSONExtractString(raw, 'b'), JSONExtractRaw(raw, 'o')))) FROM json_sc SETTINGS short_circuit_function_evaluation = 'enable';

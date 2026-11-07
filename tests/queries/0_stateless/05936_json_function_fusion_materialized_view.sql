@@ -27,7 +27,8 @@ SELECT id, JSONExtractString(raw, 'a') AS a, JSONExtractInt(raw, 'n') AS n, JSON
 FROM json_src SETTINGS allow_experimental_analyzer = 0;
 
 INSERT INTO /* tag:insert_fused */ json_src SELECT number, concat('{"a": "a', toString(number % 10), '", "n": ', toString(number), ', "o": {"x": ', toString(number % 3), ', "y": "y', toString(number % 4), '"}, "b": [', toString(number), ', ', toString(number + 1), ']}') FROM numbers(10000);
-INSERT INTO /* tag:insert_fused_small */ json_src VALUES (10000, 'not json'), (10001, '{"A": "upper", "N": 5}'), (10002, '{}');
+-- The profile events of a `VALUES` insert are not attributed to its query log entry, so only the first insert is tagged.
+INSERT INTO json_src VALUES (10000, 'not json'), (10001, '{"A": "upper", "N": 5}'), (10002, '{}');
 
 INSERT INTO json_target_plain SELECT id, JSONExtractString(raw, 'a') AS a, JSONExtractInt(raw, 'n') AS n, JSONExtractInt(raw, 'o', 'x') AS x, JSONExtractString(raw, 'o', 'y') AS y,
     JSONExtract(raw, 'b', 'Array(Int64)') AS b, JSONHas(raw, 'a') AS has_a, JSONExtract(raw, 'o', 'Tuple(x Int32, y String)') AS t, JSONExtractRaw(raw, 'o') AS raw_o,
