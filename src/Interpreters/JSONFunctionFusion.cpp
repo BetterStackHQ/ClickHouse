@@ -28,6 +28,8 @@ public:
 
     String getName() const override { return "__jsonFusedElement"; }
     bool useDefaultImplementationForConstants() const override { return true; }
+    /// The element is returned as the member produced it, also when it is or contains `LowCardinality`.
+    bool useDefaultImplementationForLowCardinalityColumns() const override { return false; }
 
     ColumnPtr executeImpl(const ColumnsWithTypeAndName & arguments, const DataTypePtr &, size_t) const override
     {
@@ -111,6 +113,7 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
         it->second.push_back({&node, std::move(arguments)});
     }
 
+    bool fused_any = false;
     for (const auto * document : documents)
     {
         auto & group = groups[document];
@@ -134,7 +137,7 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
 
         /// Each member is rewritten in place into the element of the fused result that its `Impl` produced,
         /// so every pointer to it (outputs, other nodes' children) stays valid; its result name and type do
-        /// not change. The former constant arguments stay in the DAG as unreferenced nodes.
+        /// not change.
         ColumnsWithTypeAndName fused_arguments;
         fused_arguments.emplace_back(fused_node.column, fused_node.result_type, fused_node.result_name);
         for (size_t i = 0; i < group.size(); ++i)
@@ -147,7 +150,13 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
         }
 
         ProfileEvents::increment(ProfileEvents::JSONFunctionsFused, group.size());
+        fused_any = true;
     }
+
+    /// The former constant arguments of the members are unreferenced now; every node left in the DAG is
+    /// still executed, so drop them, as `compileExpressions` does after compilation.
+    if (fused_any)
+        removeUnusedActions(/*allow_remove_inputs = */ false);
 }
 
 }

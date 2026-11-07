@@ -109,14 +109,14 @@ concept PreparableWithCaseSensitivity = requires (T t)
 /// For example,
 /// select JSONExtractInt('{"a": "hello", "b": [-100, 200.0, 300]}', 'b', 1) = -100
 
-/// What a fused group of `JSON*` functions (see `JSONFunctionFusion.h`) runs per member on each parsed document.
+/// What a fused group of `JSON*` functions (see `JSONFunctionFusion.h`) runs for one member on each parsed document.
 template <typename JSONParser>
-class IJSONFusedMember
+class IJSONFusedMemberExecutor
 {
 public:
     using Element = typename JSONParser::Element;
 
-    virtual ~IJSONFusedMember() = default;
+    virtual ~IJSONFusedMemberExecutor() = default;
 
     virtual void prepareBlock(size_t input_rows_count) = 0;
     virtual void insertRow(const Element & document, bool document_ok, size_t row) = 0;
@@ -149,6 +149,7 @@ class FunctionJSONHelpers
 public:
     /// One call's key path and `Impl`, with the result column of the block being executed:
     /// `Executor::run` executes one of these per call, a fused function several per parsed document.
+    /// `arguments` must outlive the member.
     template <typename Name, template <typename> typename Impl, typename JSONParser, bool case_insensitive = false>
     class Member
     {
@@ -196,7 +197,7 @@ public:
         MutableColumnPtr takeResult() { return std::move(to); }
 
     private:
-        ColumnsWithTypeAndName arguments;
+        const ColumnsWithTypeAndName & arguments;
         DataTypePtr result_type;
         VectorWithMemoryTracking<Move> moves;
         Impl<JSONParser> impl;
@@ -207,7 +208,7 @@ public:
     /// Parses each document of a `String` column once and runs every member of a fused group on it,
     /// returning the members' result columns in their order. See `ActionsDAG::fuseJSONFunctions`.
     template <typename JSONParser>
-    static Columns runFused(const IColumn & json_column, std::vector<std::unique_ptr<IJSONFusedMember<JSONParser>>> & members, size_t input_rows_count)
+    static Columns runFused(const IColumn & json_column, std::vector<std::unique_ptr<IJSONFusedMemberExecutor<JSONParser>>> & members, size_t input_rows_count)
     {
         const auto * col_json_string = typeid_cast<const ColumnString *>(&json_column);
         if (!col_json_string)
@@ -751,15 +752,15 @@ private:
 };
 
 
-/// A member of a fused group: `Member` behind the type-erased per-row interface.
+/// One member of a fused group: its `Member` behind the type-erased per-row interface.
 template <typename Name, template <typename> typename Impl, typename JSONParser, bool case_insensitive>
-class JSONFusedMember final : public IJSONFusedMember<JSONParser>
+class JSONFusedMemberExecutor final : public IJSONFusedMemberExecutor<JSONParser>
 {
 public:
     using Element = typename JSONParser::Element;
 
-    JSONFusedMember(const ColumnsWithTypeAndName & arguments, const DataTypePtr & result_type, const FormatSettings & format_settings_)
-        : member(arguments, result_type), format_settings(format_settings_)
+    JSONFusedMemberExecutor(const ColumnsWithTypeAndName & arguments, const DataTypePtr & result_type, FormatSettings format_settings_)
+        : member(arguments, result_type), format_settings(std::move(format_settings_))
     {
     }
 
@@ -772,22 +773,22 @@ private:
     FormatSettings format_settings;
 };
 
-/// `IJSONFusableFunction` plus what the fused function needs from a member: its per-row work for each parser.
-class IJSONFusableFunctionWithMembers : public IJSONFusableFunction
+/// `IJSONFusableFunction` plus what the fused function needs from a member: its per-row executor for each parser.
+class IJSONFusableFunctionWithExecutors : public IJSONFusableFunction
 {
 public:
 #if USE_SIMDJSON
-    virtual std::unique_ptr<IJSONFusedMember<SimdJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const = 0;
+    virtual std::unique_ptr<IJSONFusedMemberExecutor<SimdJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const = 0;
 #endif
 #if USE_RAPIDJSON
-    virtual std::unique_ptr<IJSONFusedMember<RapidJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const = 0;
+    virtual std::unique_ptr<IJSONFusedMemberExecutor<RapidJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const = 0;
 #else
-    virtual std::unique_ptr<IJSONFusedMember<DummyJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const = 0;
+    virtual std::unique_ptr<IJSONFusedMemberExecutor<DummyJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const = 0;
 #endif
 };
 
 template <typename Name, template<typename> typename Impl, bool case_insensitive = false>
-class FunctionBaseFunctionJSON final : public IFunctionBase, public IJSONFusableFunctionWithMembers
+class FunctionBaseFunctionJSON final : public IFunctionBase, public IJSONFusableFunctionWithExecutors
 {
 public:
     explicit FunctionBaseFunctionJSON(
@@ -849,28 +850,28 @@ public:
     bool usesSimdJSON() const override { return allow_simdjson; }
 
 #if USE_SIMDJSON
-    std::unique_ptr<IJSONFusedMember<SimdJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const override
+    std::unique_ptr<IJSONFusedMemberExecutor<SimdJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const SimdJSONParser *) const override
     {
-        return createMemberImpl<SimdJSONParser>(arguments);
+        return createMemberExecutorImpl<SimdJSONParser>(arguments);
     }
 #endif
 #if USE_RAPIDJSON
-    std::unique_ptr<IJSONFusedMember<RapidJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const override
+    std::unique_ptr<IJSONFusedMemberExecutor<RapidJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const RapidJSONParser *) const override
     {
-        return createMemberImpl<RapidJSONParser>(arguments);
+        return createMemberExecutorImpl<RapidJSONParser>(arguments);
     }
 #else
-    std::unique_ptr<IJSONFusedMember<DummyJSONParser>> createMember(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const override
+    std::unique_ptr<IJSONFusedMemberExecutor<DummyJSONParser>> createMemberExecutor(const ColumnsWithTypeAndName & arguments, const DummyJSONParser *) const override
     {
-        return createMemberImpl<DummyJSONParser>(arguments);
+        return createMemberExecutorImpl<DummyJSONParser>(arguments);
     }
 #endif
 
 private:
     template <typename JSONParser>
-    std::unique_ptr<IJSONFusedMember<JSONParser>> createMemberImpl(const ColumnsWithTypeAndName & arguments) const
+    std::unique_ptr<IJSONFusedMemberExecutor<JSONParser>> createMemberExecutorImpl(const ColumnsWithTypeAndName & arguments) const
     {
-        return std::make_unique<JSONFusedMember<Name, Impl, JSONParser, case_insensitive>>(
+        return std::make_unique<JSONFusedMemberExecutor<Name, Impl, JSONParser, case_insensitive>>(
             arguments, json_return_type, getFormatSettingsForExecution(format_settings));
     }
 
@@ -898,11 +899,11 @@ public:
     {
         /// The members' moves and extract trees are built per block, as `Executor::run` builds them per call:
         /// one executable is shared by all the threads that execute the expression.
-        std::vector<std::unique_ptr<IJSONFusedMember<JSONParser>>> member_executors;
+        std::vector<std::unique_ptr<IJSONFusedMemberExecutor<JSONParser>>> member_executors;
         member_executors.reserve(members->size());
         for (const auto & member : *members)
             member_executors.push_back(
-                dynamic_cast<const IJSONFusableFunctionWithMembers &>(*member.function).createMember(member.arguments, static_cast<const JSONParser *>(nullptr)));
+                dynamic_cast<const IJSONFusableFunctionWithExecutors &>(*member.function).createMemberExecutor(member.arguments, static_cast<const JSONParser *>(nullptr)));
 
         return ColumnTuple::create(FunctionJSONHelpers::runFused<JSONParser>(*arguments[0].column, member_executors, input_rows_count));
     }
@@ -924,7 +925,7 @@ public:
         element_types.reserve(members->size());
         for (const auto & member : *members)
         {
-            const auto & fusable = dynamic_cast<const IJSONFusableFunctionWithMembers &>(*member.function);
+            const auto & fusable = dynamic_cast<const IJSONFusableFunctionWithExecutors &>(*member.function);
             if (!fusable.isFusable(member.arguments) || fusable.usesSimdJSON() != usesSimdJSON())
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "Function {} cannot be a member of a fused JSON function", member.function->getName());
             element_types.push_back(member.function->getResultType());

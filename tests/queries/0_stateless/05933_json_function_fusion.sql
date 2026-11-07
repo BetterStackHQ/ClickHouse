@@ -76,7 +76,13 @@ CREATE VIEW json_wide AS SELECT
     JSONExtractRawCaseInsensitive(raw, 'O') AS ci_raw_o,
     JSONExtractArrayRawCaseInsensitive(raw, 'B') AS ci_array_raw_b,
     JSONExtractKeysAndValuesRawCaseInsensitive(raw, 'O') AS ci_kv_raw_o,
-    JSONExtractKeysCaseInsensitive(raw, 'O') AS ci_keys_o
+    JSONExtractKeysCaseInsensitive(raw, 'O') AS ci_keys_o,
+    JSONExtract(raw, 'o', 'Tuple(x Int32, y LowCardinality(String))') AS ex_o_tuple_lc,
+    JSONExtract(raw, 'b', 'Array(LowCardinality(String))') AS ex_b_array_lc,
+    JSONExtract(raw, 'o', 'Map(LowCardinality(String), String)') AS ex_o_map_lc,
+    JSONExtractKeysAndValues(raw, 'o', 'LowCardinality(String)') AS kv_o_lc,
+    JSONExtractInt(JSONExtractRaw(raw, 'o'), 'x') AS int_x_of_raw_o,
+    JSONExtractString(JSONExtractRaw(raw, 'o'), 'y') AS str_y_of_raw_o
 FROM json_docs;
 
 CREATE TABLE json_wide_fused ENGINE = Memory AS SELECT /* tag:wide_fused */ * FROM json_wide SETTINGS fuse_json_functions = 1;
@@ -94,6 +100,28 @@ SELECT id, kv_o, raw_o, raw_root, array_raw_b, kv_raw_o, keys_root, keys_o
 FROM json_wide_fused WHERE id < 100 ORDER BY id;
 SELECT id, ci_str_a, cs_str_A, ci_int_n, ci_uint_big, ci_float_f, ci_bool_t, ci_ex_o_x, ci_kv_o, ci_raw_o, ci_array_raw_b, ci_kv_raw_o, ci_keys_o
 FROM json_wide_fused WHERE id < 100 ORDER BY id;
+SELECT id, ex_o_tuple_lc, ex_b_array_lc, ex_o_map_lc, kv_o_lc, int_x_of_raw_o, str_y_of_raw_o
+FROM json_wide_fused WHERE id < 100 ORDER BY id;
+
+-- The same with the rapidjson parser, and with one row per block.
+CREATE TABLE json_wide_rapid_fused ENGINE = Memory AS SELECT /* tag:rapid_fused */ * FROM json_wide SETTINGS fuse_json_functions = 1, allow_simdjson = 0;
+CREATE TABLE json_wide_rapid_plain ENGINE = Memory AS SELECT /* tag:rapid_plain */ * FROM json_wide SETTINGS fuse_json_functions = 0, allow_simdjson = 0;
+SELECT 'rapidjson rows', (SELECT count() FROM json_wide_rapid_fused), (SELECT count() FROM json_wide_rapid_plain);
+SELECT 'rapidjson fused minus plain', count() FROM (SELECT * FROM json_wide_rapid_fused EXCEPT SELECT * FROM json_wide_rapid_plain);
+SELECT 'rapidjson plain minus fused', count() FROM (SELECT * FROM json_wide_rapid_plain EXCEPT SELECT * FROM json_wide_rapid_fused);
+CREATE TABLE json_wide_block1_fused ENGINE = Memory AS SELECT /* tag:block1_fused */ * FROM json_wide WHERE id < 100 SETTINGS fuse_json_functions = 1, max_block_size = 1;
+SELECT 'one row per block fused minus plain', count() FROM (SELECT * FROM json_wide_block1_fused EXCEPT SELECT * FROM json_wide_plain WHERE id < 100);
+SELECT 'one row per block plain minus fused', count() FROM (SELECT * FROM json_wide_plain WHERE id < 100 EXCEPT SELECT * FROM json_wide_block1_fused);
+
+-- A document column stored with sparse serialization.
+CREATE TABLE json_sparse (id UInt32, raw String) ENGINE = MergeTree ORDER BY id SETTINGS ratio_of_defaults_for_sparse_serialization = 0.5;
+INSERT INTO json_sparse SELECT number, if(number % 20 = 0, concat('{"a": "s', toString(number), '", "n": ', toString(number), '}'), '') FROM numbers(2000);
+SELECT DISTINCT serialization_kind FROM system.parts_columns WHERE database = currentDatabase() AND table = 'json_sparse' AND column = 'raw' AND active;
+CREATE TABLE json_sparse_fused ENGINE = Memory AS SELECT /* tag:sparse_fused */ id, JSONExtractString(raw, 'a') AS a, JSONExtractInt(raw, 'n') AS n, isValidJSON(raw) AS valid FROM json_sparse SETTINGS fuse_json_functions = 1;
+CREATE TABLE json_sparse_plain ENGINE = Memory AS SELECT /* tag:sparse_plain */ id, JSONExtractString(raw, 'a') AS a, JSONExtractInt(raw, 'n') AS n, isValidJSON(raw) AS valid FROM json_sparse SETTINGS fuse_json_functions = 0;
+SELECT 'sparse rows', (SELECT count() FROM json_sparse_fused), (SELECT count() FROM json_sparse_plain), (SELECT countIf(valid) FROM json_sparse_fused);
+SELECT 'sparse fused minus plain', count() FROM (SELECT * FROM json_sparse_fused EXCEPT SELECT * FROM json_sparse_plain);
+SELECT 'sparse plain minus fused', count() FROM (SELECT * FROM json_sparse_plain EXCEPT SELECT * FROM json_sparse_fused);
 
 -- The settings a call captured when it was built decide what its member of the group extracts.
 CREATE TABLE json_settings_fused ENGINE = Memory AS SELECT /* tag:settings_fused */ id, JSONExtract(raw, 'd2', 'DateTime(\'UTC\')') AS d2, JSONExtract(raw, 'o', 'Tuple(y String, x Int32)') AS o FROM json_docs WHERE id < 100
@@ -114,6 +142,12 @@ FROM system.query_log
 WHERE current_database = currentDatabase() AND type = 'QueryFinish' AND query LIKE '%tag:%' AND query NOT LIKE '%system.query_log%'
 ORDER BY event_time_microseconds;
 
+DROP TABLE json_sparse_plain;
+DROP TABLE json_sparse_fused;
+DROP TABLE json_sparse;
+DROP TABLE json_wide_block1_fused;
+DROP TABLE json_wide_rapid_plain;
+DROP TABLE json_wide_rapid_fused;
 DROP TABLE json_settings_default;
 DROP TABLE json_settings_plain;
 DROP TABLE json_settings_fused;
