@@ -9,7 +9,10 @@ namespace DB
 {
 
 /// The nodes that produce the documents of the `JSON*` calls under `root` that `ActionsDAG::fuseJSONFunctions` fuses.
-std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node & root);
+/// With `eagerly_executed_only`, the arguments of short-circuit functions that may be executed lazily (every argument
+/// of `and`, `or`, `if`, `multiIf` but the first) are not descended: a call under them is never the eagerly
+/// executed member a fused group needs.
+std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node & root, bool eagerly_executed_only = false);
 
 /// Whether the atoms of a conjunction that read one JSON document are kept in one expression, where
 /// `ActionsDAG::fuseJSONFunctions` parses the document once for them (`fuse_json_functions`). Only with

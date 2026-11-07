@@ -39,6 +39,14 @@ SELECT /* tag:where_and_select */ sum(cityHash64(JSONExtractString(raw, 'message
 SELECT /* tag:where_guarded */ count() FROM json_atoms_memory WHERE if(raw LIKE '%email.failed%', JSONExtractString(raw, 'event') = 'email.failed', 0) AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0);
 SELECT /* tag:where_guarded_plain */ count() FROM json_atoms_memory WHERE if(raw LIKE '%email.failed%', JSONExtractString(raw, 'event') = 'email.failed', 0) AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0) SETTINGS fuse_json_functions = 0;
 
+-- Cheap atoms in front of guarded atoms: no call is eager, nothing is fused, and the atoms are split one by one as before.
+SELECT /* tag:where_cheap_then_guarded */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND if(raw LIKE '%email.failed%', JSONExtractString(raw, 'event') = 'email.failed', 0) AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0);
+SELECT /* tag:where_cheap_then_guarded_plain */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND if(raw LIKE '%email.failed%', JSONExtractString(raw, 'event') = 'email.failed', 0) AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0) SETTINGS fuse_json_functions = 0;
+
+-- A guarded atom behind a plain one joins its run: the guarded call becomes an element of the fused group.
+SELECT /* tag:where_then_guarded */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0);
+SELECT /* tag:where_then_guarded_plain */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0) SETTINGS fuse_json_functions = 0;
+
 -- An OR of predicates on one extracted value next to an atom on the same document.
 SELECT /* tag:where_or */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'level') = 'warn' AND (JSONExtractString(raw, 'event') LIKE 'email%' OR JSONExtractString(raw, 'event') LIKE 'store%');
 

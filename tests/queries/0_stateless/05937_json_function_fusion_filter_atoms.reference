@@ -8,6 +8,10 @@
 14685472349037085481
 1667
 1667
+1667
+1667
+1667
+1667
 3333
 1667
 1667
@@ -37,6 +41,10 @@ tag:where_interleaved	0	15005	0
 tag:where_and_select	4	11669	11669
 tag:where_guarded	0	5002	0
 tag:where_guarded_plain	0	5002	0
+tag:where_cheap_then_guarded	0	3334	0
+tag:where_cheap_then_guarded_plain	0	3334	0
+tag:where_then_guarded	2	5001	5001
+tag:where_then_guarded_plain	0	6668	0
 tag:where_or	2	10002	10002
 tag:prewhere_two_atoms	2	10002	10002
 tag:prewhere_two_atoms_plain	0	13337	0

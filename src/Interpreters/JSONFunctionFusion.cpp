@@ -7,6 +7,7 @@
 #include <Common/ProfileEvents.h>
 #include <Common/assert_cast.h>
 #include <DataTypes/DataTypeTuple.h>
+#include <Functions/IFunction.h>
 #include <Functions/JSONFunctionFusion.h>
 
 #include <fmt/format.h>
@@ -111,7 +112,7 @@ const ActionsDAG::Node * ActionsDAG::getFusableJSONDocument(const Node & node)
     return DB::getFusableJSONDocument(node, arguments);
 }
 
-std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node & root)
+std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node & root, bool eagerly_executed_only)
 {
     std::unordered_set<const ActionsDAG::Node *> documents;
     std::stack<const ActionsDAG::Node *> nodes;
@@ -125,9 +126,16 @@ std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const Actio
         if (const auto * document = ActionsDAG::getFusableJSONDocument(*node))
             documents.insert(document);
 
-        for (const auto * child : node->children)
-            if (visited.insert(child).second)
-                nodes.push(child);
+        IFunctionBase::ShortCircuitSettings short_circuit_settings;
+        const bool short_circuit = eagerly_executed_only && node->type == ActionsDAG::ActionType::FUNCTION && node->function_base
+            && node->function_base->isShortCircuit(short_circuit_settings, node->children.size());
+        for (size_t i = 0; i < node->children.size(); ++i)
+        {
+            if (short_circuit && !short_circuit_settings.arguments_with_disabled_lazy_execution.contains(i))
+                continue;
+            if (visited.insert(node->children[i]).second)
+                nodes.push(node->children[i]);
+        }
     }
     return documents;
 }

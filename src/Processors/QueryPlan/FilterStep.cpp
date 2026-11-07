@@ -222,17 +222,43 @@ static ActionsAndName splitSingleAndFilter(ActionsDAG & dag, const ActionsDAG::N
 
 /// Split a run of atoms to a separate DAG as one `and`: the short-circuit evaluation of `and` keeps
 /// their order, and the `JSON*` calls they share a document with are fused into one parse of it.
-static ActionsAndName splitAndFilterGroup(ActionsDAG & dag, ActionsDAG::NodeRawConstPtrs atoms)
+/// The chain is rebuilt with the group in place of its atoms (`and(a, b, c, d)` becomes `and(a, and(b, c), d)`),
+/// so that the group alone is passed to the remainder: an atom the remainder still read would be an output of
+/// the split part, and an output is never executed lazily.
+static ActionsAndName splitAndFilterGroup(
+    ActionsDAG & dag, const std::string & filter_name, const ActionsDAG::NodeRawConstPtrs & chain, ActionsDAG::NodeRawConstPtrs group)
 {
     FunctionOverloadResolverPtr func_builder_and = std::make_unique<FunctionToOverloadResolverAdaptor>(std::make_shared<FunctionAnd>());
-    const auto & group = dag.addFunction(func_builder_and, std::move(atoms), {});
-    return splitSingleAndFilter(dag, &group);
+    std::unordered_set<const ActionsDAG::Node *> group_atoms(group.begin(), group.end());
+    const auto & group_node = dag.addFunction(func_builder_and, std::move(group), {});
+
+    ActionsDAG::NodeRawConstPtrs children;
+    bool group_added = false;
+    for (const auto * atom : chain)
+    {
+        if (!group_atoms.contains(atom))
+            children.push_back(atom);
+        else if (!group_added)
+        {
+            children.push_back(&group_node);
+            group_added = true;
+        }
+    }
+
+    auto & outputs = dag.getOutputs();
+    auto filter_output = std::ranges::find_if(outputs, [&](const auto * output) { return output->result_name == filter_name; });
+    *filter_output = &dag.addAlias(dag.addFunction(func_builder_and, std::move(children), {}), filter_name);
+    /// The chain the filter was is unused now; `split` would copy it to the remainder, with its atoms as inputs.
+    dag.removeUnusedActions(/*allow_remove_inputs=*/ false, /*allow_constant_folding=*/ false);
+
+    return splitSingleAndFilter(dag, &group_node);
 }
 
 /// Try to split the left most AND atom to a separate DAG.
-/// With `fuse_json`, the left most atom takes the atoms that follow it as long as they read a JSON document
-/// it reads, so that the calls on that document are parsed once (`fuse_json_functions`). The atoms keep their
-/// order: the run is split as one `and`, so no atom is evaluated before an atom written in front of it.
+/// With `fuse_json`, the left most atom, if it has an eagerly executed `JSON*` call, takes the atoms that follow it
+/// as long as they read a JSON document it reads, so that the calls on that document are parsed once
+/// (`fuse_json_functions`). The atoms keep their order: the run is split as one `and`, so no atom is evaluated
+/// before an atom written in front of it.
 static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, const std::string & filter_name, bool fuse_json)
 {
     const auto * filter = &dag.findInOutputs(filter_name);
@@ -242,7 +268,8 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
     if (filter->type != ActionsDAG::ActionType::FUNCTION || filter->function_base->getName() != "and")
         return {};
 
-    /// Non-trivial atoms from left to right.
+    /// The atoms from left to right, and the non-trivial ones among them.
+    ActionsDAG::NodeRawConstPtrs chain;
     std::vector<const ActionsDAG::Node *> atoms;
     /// A trivial atom (a column, e.g. an atom split off before) in front of the first non-trivial one.
     bool trivial_atom_in_front = false;
@@ -262,6 +289,7 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
             continue;
         }
 
+        chain.push_back(node);
         if (!isTrivialSubtree(node))
             atoms.push_back(node);
         else if (atoms.empty())
@@ -274,7 +302,9 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
 
     if (fuse_json)
     {
-        auto documents = getFusableJSONDocuments(*atoms.front());
+        /// The run starts at an atom with a call that is executed eagerly: a run of lazily executed calls only
+        /// (`if(guard, JSONExtract(...), 0) AND ...`) has nothing to fuse them into.
+        auto documents = getFusableJSONDocuments(*atoms.front(), /*eagerly_executed_only=*/ true);
         if (!documents.empty())
         {
             ActionsDAG::NodeRawConstPtrs group{atoms.front()};
@@ -293,7 +323,7 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
                 return {};
 
             if (group.size() > 1)
-                return splitAndFilterGroup(dag, std::move(group));
+                return splitAndFilterGroup(dag, filter_name, chain, std::move(group));
         }
     }
 
