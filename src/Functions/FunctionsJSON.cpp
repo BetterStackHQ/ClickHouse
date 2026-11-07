@@ -936,12 +936,6 @@ public:
 
     String getName() const override { return "__jsonFused"; }
 
-    void updateHash(SipHash & hash) const override
-    {
-        for (const auto & member : *members)
-            member.function->updateHash(hash);
-    }
-
     const DataTypes & getArgumentTypes() const override { return argument_types; }
     const DataTypePtr & getResultType() const override { return result_type; }
     bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo &) const override { return true; }

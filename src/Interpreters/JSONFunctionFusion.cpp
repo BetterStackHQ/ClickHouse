@@ -49,7 +49,6 @@ public:
     }
 
     String getName() const override { return "__jsonFusedElement"; }
-    void updateHash(SipHash & hash) const override { hash.update(index); }
     const DataTypes & getArgumentTypes() const override { return argument_types; }
     const DataTypePtr & getResultType() const override { return result_type; }
     bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo &) const override { return true; }
@@ -92,7 +91,9 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
             continue;
 
         /// A constant document is parsed once per block already (the default implementation for constants).
-        const Node * document = node.children.front()->getWithoutAlias();
+        const Node * document = node.children.front();
+        while (document->type == ActionType::ALIAS)
+            document = document->children.front();
         if (document->column)
             continue;
 
