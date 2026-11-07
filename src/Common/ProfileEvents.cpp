@@ -409,6 +409,7 @@
     \
     M(CompileFunction, "Number of times a compilation of generated LLVM code (to create fused function for complex expressions) was initiated.", ValueType::Number) \
     M(CompiledFunctionExecute, "Number of times a compiled function was executed.", ValueType::Number) \
+    M(JSONDocumentsParsed, "Number of JSON documents parsed by the `JSON*` functions, fused or not. A constant document counts once per block.", ValueType::Number) \
     M(JSONFunctionsFused, "Number of `JSON*` function calls turned into members of a fused group, which parses each document once for all of them, when the actions of an expression were built (setting `fuse_json_functions`).", ValueType::Number) \
     M(JSONFusedDocumentsParsed, "Number of JSON documents parsed by fused groups of `JSON*` functions. One parse serves every member of the group: (members - 1) parses are saved per document.", ValueType::Number) \
     M(CompileExpressionsMicroseconds, "Total time spent for compilation of expressions to LLVM code.", ValueType::Microseconds) \

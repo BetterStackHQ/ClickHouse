@@ -49,6 +49,7 @@
 
 namespace ProfileEvents
 {
+    extern const Event JSONDocumentsParsed;
     extern const Event JSONFusedDocumentsParsed;
 }
 
@@ -240,6 +241,7 @@ public:
             for (auto & member : members)
                 member->insertRow(document, document_ok, i);
         }
+        ProfileEvents::increment(ProfileEvents::JSONDocumentsParsed, input_rows_count);
         ProfileEvents::increment(ProfileEvents::JSONFusedDocumentsParsed, input_rows_count);
 
         Columns results;
@@ -319,6 +321,7 @@ public:
 
                 member.insertRow(document, document_ok, i, format_settings);
             }
+            ProfileEvents::increment(ProfileEvents::JSONDocumentsParsed, col_json_const ? 1 : input_rows_count);
             return member.takeResult();
         }
 
