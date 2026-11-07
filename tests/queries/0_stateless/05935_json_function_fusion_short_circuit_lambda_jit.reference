@@ -24,19 +24,19 @@
 2	67	b112
 3	67	b118
 4	67	b104
-tag:if_enable	0
-tag:if_force_enable	0
+tag:if_enable	3
+tag:if_force_enable	3
 tag:if_disable	3
 tag:if_plain	0
-tag:and_enable	0
+tag:and_enable	3
 tag:and_disable	0
 tag:and_disable_single_filter	3
 tag:and_plain	0
-tag:multi_if_enable	0
+tag:multi_if_enable	4
 tag:multi_if_plain	0
-tag:mixed_enable	3
+tag:mixed_enable	4
 tag:mixed_plain	0
-tag:lambda_fused	2
+tag:lambda_fused	4
 tag:lambda_plain	0
 tag:jit_fused	2
 tag:jit_plain	0

@@ -228,6 +228,7 @@ namespace DB
 
 namespace Setting
 {
+    extern const SettingsBool fuse_json_functions;
     extern const SettingsBool allow_experimental_analyzer;
     extern const SettingsBool allow_asynchronous_read_from_io_pool_for_merge_tree;
     extern const SettingsBool allow_calculating_subcolumns_sizes_for_merge_tree_reading;
@@ -496,6 +497,9 @@ ReadFromMergeTree::ReadFromMergeTree(
     , is_parallel_reading_from_replicas(enable_parallel_reading_)
     , number_of_current_replica(number_of_current_replica_)
 {
+    /// The `PREWHERE` actions execute the query like the actions of the pipeline, which `ExpressionActionsSettings`
+    /// builds with `CompileExpressions::yes`; they are not read back as a DAG, so the `JSON*` calls in them are fused.
+    actions_settings.fuse_json_functions = context_->getSettingsRef()[Setting::fuse_json_functions];
     if (is_parallel_reading_from_replicas)
     {
         /// Taken exactly as given: a read marked by `enableParallelReadingFromReplicasForSerialization`

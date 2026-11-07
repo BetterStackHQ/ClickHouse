@@ -1,4 +1,6 @@
-#include <Interpreters/ActionsDAG.h>
+#include <Interpreters/JSONFunctionFusion.h>
+
+#include <stack>
 
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnTuple.h>
@@ -107,6 +109,32 @@ const ActionsDAG::Node * ActionsDAG::getFusableJSONDocument(const Node & node)
 {
     ColumnsWithTypeAndName arguments;
     return DB::getFusableJSONDocument(node, arguments);
+}
+
+std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node & root)
+{
+    std::unordered_set<const ActionsDAG::Node *> documents;
+    std::stack<const ActionsDAG::Node *> nodes;
+    nodes.push(&root);
+    std::unordered_set<const ActionsDAG::Node *> visited{&root};
+    while (!nodes.empty())
+    {
+        const auto * node = nodes.top();
+        nodes.pop();
+
+        if (const auto * document = ActionsDAG::getFusableJSONDocument(*node))
+            documents.insert(document);
+
+        for (const auto * child : node->children)
+            if (visited.insert(child).second)
+                nodes.push(child);
+    }
+    return documents;
+}
+
+bool fuseJSONFunctionsAcrossAtoms(const ExpressionActionsSettings & settings)
+{
+    return settings.fuse_json_functions && settings.short_circuit_function_evaluation != ShortCircuitFunctionEvaluation::DISABLE;
 }
 
 void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes)

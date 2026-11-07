@@ -1,0 +1,46 @@
+1667
+1667
+1667
+0
+0
+1667
+14685472349037085481
+1667
+1667
+3333
+1667
+1667
+0
+1667
+1667
+4664287922112263084
+4664287922112263084
+7409040458090092061
+7409040458090092061
+4664287922112263084
+AND column: equals(modulo(__table1.id, 2_UInt8), 0_UInt8)
+AND column: and(equals(JSONExtractString(__table1.raw, \'event\'_String), \'email.failed\'_String), equals(JSONExtractString(__table1.raw, \'level\'_String), \'warn\'_String))
+Filter column: and(equals(modulo(__table1.id, 2_UInt8), 0_UInt8), equals(JSONExtractString(__table1.raw, \'event\'_String), \'email.failed\'_String), equals(JSONExtractString(__table1.raw, \'level\'_String), \'warn\'_String), equals(JSONExtractString(__table1.other, \'env\'_String), \'production\'_String)) (removed)
+AND column: equals(modulo(__table1.id, 2_UInt8), 0_UInt8)
+AND column: and(equals(JSONExtractString(__table1.raw, \'event\'_String), \'email.failed\'_String), equals(JSONExtractString(__table1.raw, \'level\'_String), \'warn\'_String))
+Filter column: and(equals(modulo(__table1.id, 2_UInt8), 0_UInt8), equals(JSONExtractString(__table1.raw, \'event\'_String), \'email.failed\'_String), equals(JSONExtractString(__table1.raw, \'level\'_String), \'warn\'_String), equals(JSONExtractString(__table1.other, \'env\'_String), \'production\'_String)) (removed)
+tag:where_two_atoms	2	10002	10002
+tag:where_two_atoms_disable	0	13337	0
+tag:where_two_atoms_plain	0	13337	0
+tag:where_run	3	5001	5001
+tag:where_run_plain	0	6668	0
+tag:where_interleaved	0	15005	0
+tag:where_and_select	4	11669	11669
+tag:where_guarded	0	5002	0
+tag:where_guarded_plain	0	5002	0
+tag:where_or	2	10002	10002
+tag:prewhere_two_atoms	2	10002	10002
+tag:prewhere_two_atoms_plain	0	13337	0
+tag:prewhere_run	12	10002	10002
+tag:prewhere_guarded	0	5002	0
+tag:prewhere_explicit	8	11669	10002
+tag:lazy_with_eager	3	10002	10002
+tag:lazy_with_eager_plain	0	30004	0
+tag:lazy_alone	0	8335	0
+tag:lazy_alone_plain	0	8335	0
+tag:lazy_force_enable	3	10002	10002

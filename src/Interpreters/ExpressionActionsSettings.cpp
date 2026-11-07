@@ -25,7 +25,10 @@ ExpressionActionsSettings::ExpressionActionsSettings(const Settings & from, Comp
     compile_expressions = compile_expressions_;
     short_circuit_function_evaluation = from[Setting::short_circuit_function_evaluation];
     enable_lazy_columns_replication = from[Setting::enable_lazy_columns_replication];
-    fuse_json_functions = from[Setting::fuse_json_functions];
+    /// Like compilation, only in the actions that execute a query: the actions of a storage (a sorting key,
+    /// an index, a TTL) are read back as a DAG by the index analysis and must keep their original nodes.
+    /// `ReadFromMergeTree` sets it for its `PREWHERE` actions on its own.
+    fuse_json_functions = compile_expressions_ == CompileExpressions::yes && from[Setting::fuse_json_functions];
 }
 
 ExpressionActionsSettings::ExpressionActionsSettings(ContextPtr from, CompileExpressions compile_expressions_)
