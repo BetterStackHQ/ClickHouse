@@ -9,10 +9,15 @@
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Functions/FunctionsLogical.h>
 #include <Functions/IFunction.h>
+#include <Functions/IFunctionAdaptors.h>
 #include <IO/Operators.h>
 #include <Interpreters/ActionsDAG.h>
+#include <Interpreters/Context.h>
 #include <Interpreters/ExpressionActions.h>
+#include <Core/Settings.h>
+#include <Common/CurrentThread.h>
 #include <Processors/QueryPlan/QueryPlanFormat.h>
 #include <Processors/QueryPlan/QueryPlanStepRegistry.h>
 #include <Processors/QueryPlan/Serialization.h>
@@ -26,6 +31,12 @@
 
 namespace DB
 {
+
+namespace Setting
+{
+    extern const SettingsShortCircuitFunctionEvaluation short_circuit_function_evaluation;
+    extern const SettingsBool fuse_json_functions;
+}
 
 namespace ErrorCodes
 {
@@ -208,8 +219,42 @@ static ActionsAndName splitSingleAndFilter(ActionsDAG & dag, const ActionsDAG::N
     return ActionsAndName{std::move(split_result.first), std::move(name)};
 }
 
+/// The nodes that produce the documents of the `JSON*` calls in the atom that `ActionsDAG::fuseJSONFunctions` fuses.
+static std::unordered_set<const ActionsDAG::Node *> getFusableJSONDocuments(const ActionsDAG::Node * node)
+{
+    std::unordered_set<const ActionsDAG::Node *> documents;
+    std::stack<const ActionsDAG::Node *> nodes;
+    nodes.push(node);
+    std::unordered_set<const ActionsDAG::Node *> visited{node};
+    while (!nodes.empty())
+    {
+        node = nodes.top();
+        nodes.pop();
+
+        if (const auto * document = ActionsDAG::getFusableJSONDocument(*node))
+            documents.insert(document);
+
+        for (const auto * child : node->children)
+            if (visited.insert(child).second)
+                nodes.push(child);
+    }
+    return documents;
+}
+
+/// Split a run of atoms to a separate DAG as one `and`: the short-circuit evaluation of `and` keeps
+/// their order, and the `JSON*` calls they share a document with are fused into one parse of it.
+static ActionsAndName splitAndFilterGroup(ActionsDAG & dag, ActionsDAG::NodeRawConstPtrs atoms)
+{
+    FunctionOverloadResolverPtr func_builder_and = std::make_unique<FunctionToOverloadResolverAdaptor>(std::make_shared<FunctionAnd>());
+    const auto & group = dag.addFunction(func_builder_and, std::move(atoms), {});
+    return splitSingleAndFilter(dag, &group);
+}
+
 /// Try to split the left most AND atom to a separate DAG.
-static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, const std::string & filter_name)
+/// With `fuse_json`, the left most atom takes the atoms that follow it as long as they read a JSON document
+/// it reads, so that the calls on that document are parsed once (`fuse_json_functions`). The atoms keep their
+/// order: the run is split as one `and`, so no atom is evaluated before an atom written in front of it.
+static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, const std::string & filter_name, bool fuse_json)
 {
     const auto * filter = &dag.findInOutputs(filter_name);
     while (filter->type == ActionsDAG::ActionType::ALIAS)
@@ -218,7 +263,8 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
     if (filter->type != ActionsDAG::ActionType::FUNCTION || filter->function_base->getName() != "and")
         return {};
 
-    const ActionsDAG::Node * condition_to_split = nullptr;
+    /// Non-trivial atoms from left to right.
+    std::vector<const ActionsDAG::Node *> atoms;
     std::stack<const ActionsDAG::Node *> nodes;
     nodes.push(filter);
     while (!nodes.empty())
@@ -235,28 +281,74 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
             continue;
         }
 
-        if (isTrivialSubtree(node))
-            continue;
-
-        /// Do not split subtree if it's the last non-trivial one.
-        /// So, split the first found condition only when there is a another one found.
-        if (condition_to_split)
-            return splitSingleAndFilter(dag, condition_to_split);
-
-        condition_to_split = node;
+        if (!isTrivialSubtree(node))
+            atoms.push_back(node);
     }
 
-    return {};
+    /// Do not split subtree if it's the last non-trivial one.
+    if (atoms.size() < 2)
+        return {};
+
+    if (fuse_json)
+    {
+        auto documents = getFusableJSONDocuments(atoms.front());
+        if (!documents.empty())
+        {
+            ActionsDAG::NodeRawConstPtrs group{atoms.front()};
+            for (size_t i = 1; i < atoms.size(); ++i)
+            {
+                auto atom_documents = getFusableJSONDocuments(atoms[i]);
+                if (std::ranges::none_of(atom_documents, [&](const auto * document) { return documents.contains(document); }))
+                    break;
+                group.push_back(atoms[i]);
+                documents.insert(atom_documents.begin(), atom_documents.end());
+            }
+
+            /// The run is the whole chain: nothing is left to split it from.
+            if (group.size() == atoms.size())
+                return {};
+
+            if (group.size() > 1)
+                return splitAndFilterGroup(dag, std::move(group));
+        }
+    }
+
+    return splitSingleAndFilter(dag, atoms.front());
 }
 
-static std::vector<ActionsAndName> splitAndChainIntoMultipleFilters(ActionsDAG & dag, const std::string & filter_name)
+static std::vector<ActionsAndName> splitAndChainIntoMultipleFilters(ActionsDAG & dag, const std::string & filter_name, bool fuse_json)
 {
     std::vector<ActionsAndName> res;
 
-    while (auto condition = trySplitSingleAndFilter(dag, filter_name))
+    while (auto condition = trySplitSingleAndFilter(dag, filter_name, fuse_json))
         res.push_back(std::move(*condition));
 
     return res;
+}
+
+/// Whether runs of atoms that read one JSON document are kept together for `fuse_json_functions`. With
+/// short-circuit evaluation disabled every atom of a run would be evaluated on every row, which the split
+/// into one filter per atom is there to prevent (`guard(x) AND throwing(x)`), so the runs are not formed then.
+static bool fuseJSONAtoms(const ExpressionActionsSettings & actions_settings)
+{
+    return actions_settings.fuse_json_functions
+        && actions_settings.compile_expressions == CompileExpressions::yes
+        && actions_settings.short_circuit_function_evaluation != ShortCircuitFunctionEvaluation::DISABLE;
+}
+
+/// Whether the runs of atoms on one JSON document are shown as the pipeline builds them. The pipeline is not
+/// built for `EXPLAIN`, so the settings are taken from the query context; without a query context (the plan
+/// is described outside of a query), the default values of the settings are used.
+static bool fuseJSONAtomsForDescription()
+{
+    auto fuse = [](const Settings & query_settings)
+    {
+        return query_settings[Setting::fuse_json_functions]
+            && query_settings[Setting::short_circuit_function_evaluation] != ShortCircuitFunctionEvaluation::DISABLE;
+    };
+    if (auto query_context = CurrentThread::tryGetQueryContext())
+        return fuse(query_context->getSettingsRef());
+    return fuse(Settings());
 }
 
 FilterStep::FilterStep(
@@ -290,7 +382,7 @@ void FilterStep::transformPipeline(QueryPipelineBuilder & pipeline, const BuildQ
     /// Splitting AND filter condition to steps under the setting, which is enabled with merge_filters optimization.
     /// This is needed to support short-circuit properly.
     if (settings.enable_multiple_filters_transforms_for_and_chain && !actions_dag.hasStatefulFunctions())
-        and_atoms = splitAndChainIntoMultipleFilters(actions_dag, filter_column_name);
+        and_atoms = splitAndChainIntoMultipleFilters(actions_dag, filter_column_name, fuseJSONAtoms(settings.getActionsSettings()));
 
     for (auto & and_atom : and_atoms)
     {
@@ -342,7 +434,7 @@ void FilterStep::describeActions(FormatSettings & settings) const
 
     std::vector<ActionsAndName> and_atoms;
     if (!settings.pretty && !actions_dag.hasStatefulFunctions())
-        and_atoms = splitAndChainIntoMultipleFilters(cloned_dag, filter_column_name);
+        and_atoms = splitAndChainIntoMultipleFilters(cloned_dag, filter_column_name, fuseJSONAtomsForDescription());
 
     for (auto & and_atom : and_atoms)
     {
@@ -372,7 +464,7 @@ void FilterStep::describeActions(JSONBuilder::JSONMap & map) const
 
     std::vector<ActionsAndName> and_atoms;
     if (!actions_dag.hasStatefulFunctions())
-        and_atoms = splitAndChainIntoMultipleFilters(cloned_dag, filter_column_name);
+        and_atoms = splitAndChainIntoMultipleFilters(cloned_dag, filter_column_name, fuseJSONAtomsForDescription());
 
     for (auto & and_atom : and_atoms)
     {

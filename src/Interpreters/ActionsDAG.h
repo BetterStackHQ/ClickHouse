@@ -308,9 +308,12 @@ public:
 
     /// Rewrites groups of `JSON*` function calls that read the same `String` document with constant keys into
     /// one function that parses each document once, see `JSONFunctionFusion.cpp`. Each member node stays in
-    /// place with its name and type and becomes an element of the fused result. Lazily executed nodes are
-    /// left alone: they run on a subset of the rows.
+    /// place with its name and type and becomes an element of the fused result. A lazily executed node (an
+    /// argument of a short-circuit function, run on a subset of the rows) joins a group only next to a node
+    /// that is executed on every row, whose parse it shares; it stays lazily executed as an element.
     void fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes);
+    /// The node that produces the document of a `JSON*` call that `fuseJSONFunctions` can fuse, or null.
+    static const Node * getFusableJSONDocument(const Node & node);
 
     using NodeMapping = std::unordered_map<const Node *, const Node *>;
     ActionsDAG clone(NodeMapping & old_to_new_nodes) const;

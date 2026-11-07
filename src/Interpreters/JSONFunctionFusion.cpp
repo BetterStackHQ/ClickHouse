@@ -70,8 +70,43 @@ struct FusableCall
 {
     ActionsDAG::Node * node;
     ColumnsWithTypeAndName arguments;
+    bool lazy_executed;
 };
 
+const ActionsDAG::Node * getFusableJSONDocument(const ActionsDAG::Node & node, ColumnsWithTypeAndName & arguments)
+{
+    /// A node with a column is a folded constant.
+    if (node.type != ActionsDAG::ActionType::FUNCTION || !node.function_base || node.column || node.children.empty())
+        return nullptr;
+
+    const auto * fusable = dynamic_cast<const IJSONFusableFunction *>(node.function_base.get());
+    if (!fusable)
+        return nullptr;
+
+    /// A constant document is parsed once per block already (the default implementation for constants).
+    const ActionsDAG::Node * document = node.children.front();
+    while (document->type == ActionsDAG::ActionType::ALIAS)
+        document = document->children.front();
+    if (document->column)
+        return nullptr;
+
+    arguments.clear();
+    arguments.reserve(node.children.size());
+    for (const auto * child : node.children)
+        arguments.emplace_back(child->column, child->result_type, child->result_name);
+
+    if (!fusable->isFusable(arguments))
+        return nullptr;
+
+    return document;
+}
+
+}
+
+const ActionsDAG::Node * ActionsDAG::getFusableJSONDocument(const Node & node)
+{
+    ColumnsWithTypeAndName arguments;
+    return DB::getFusableJSONDocument(node, arguments);
 }
 
 void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy_executed_nodes)
@@ -82,35 +117,15 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
 
     for (auto & node : nodes)
     {
-        /// A node with a column is a folded constant, and a lazily executed node (an argument of a
-        /// short-circuit function) runs on a subset of the rows: fusing it would parse documents it skips.
-        if (node.type != ActionType::FUNCTION || !node.function_base || node.column || node.children.empty()
-            || lazy_executed_nodes.contains(&node))
-            continue;
-
-        const auto * fusable = dynamic_cast<const IJSONFusableFunction *>(node.function_base.get());
-        if (!fusable)
-            continue;
-
-        /// A constant document is parsed once per block already (the default implementation for constants).
-        const Node * document = node.children.front();
-        while (document->type == ActionType::ALIAS)
-            document = document->children.front();
-        if (document->column)
-            continue;
-
         ColumnsWithTypeAndName arguments;
-        arguments.reserve(node.children.size());
-        for (const auto * child : node.children)
-            arguments.emplace_back(child->column, child->result_type, child->result_name);
-
-        if (!fusable->isFusable(arguments))
+        const Node * document = DB::getFusableJSONDocument(node, arguments);
+        if (!document)
             continue;
 
         auto [it, inserted] = groups.try_emplace(document);
         if (inserted)
             documents.push_back(document);
-        it->second.push_back({&node, std::move(arguments)});
+        it->second.push_back({&node, std::move(arguments), lazy_executed_nodes.contains(&node)});
     }
 
     bool fused_any = false;
@@ -118,6 +133,15 @@ void ActionsDAG::fuseJSONFunctions(const std::unordered_set<const Node *> & lazy
     {
         auto & group = groups[document];
         if (group.size() < 2)
+            continue;
+
+        /// A lazily executed call (an argument of a short-circuit function) runs on a subset of the rows:
+        /// a group of such calls alone would parse the documents they skip. Next to a call that runs on
+        /// every row the document is parsed for every row anyway, so the lazily executed call joins the
+        /// group: only its extraction runs on more rows, which is cheap next to the parse and cannot throw.
+        /// Its node stays lazily executed and takes the element of the fused result on the rows it is
+        /// asked for.
+        if (std::ranges::all_of(group, [](const auto & call) { return call.lazy_executed; }))
             continue;
 
         const bool uses_simdjson = dynamic_cast<const IJSONFusableFunction &>(*group.front().node->function_base).usesSimdJSON();
