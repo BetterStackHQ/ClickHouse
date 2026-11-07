@@ -308,12 +308,13 @@ static std::optional<ActionsAndName> trySplitSingleAndFilter(ActionsDAG & dag, c
         if (!documents.empty())
         {
             ActionsDAG::NodeRawConstPtrs group{atoms.front()};
-            for (size_t i = 1; i < atoms.size(); ++i)
+            /// Along the chain, not the atoms: a trivial atom between two atoms of the run would be evaluated after them.
+            for (auto it = std::ranges::find(chain, atoms.front()) + 1; it != chain.end(); ++it)
             {
-                auto atom_documents = getFusableJSONDocuments(*atoms[i]);
+                auto atom_documents = getFusableJSONDocuments(**it);
                 if (std::ranges::none_of(atom_documents, [&](const auto * document) { return documents.contains(document); }))
                     break;
-                group.push_back(atoms[i]);
+                group.push_back(*it);
                 documents.insert(atom_documents.begin(), atom_documents.end());
             }
 

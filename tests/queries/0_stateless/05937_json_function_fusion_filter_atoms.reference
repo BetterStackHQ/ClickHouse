@@ -12,6 +12,10 @@
 1667
 1667
 1667
+1667
+1667
+1667
+1667
 3333
 1667
 1667
@@ -45,6 +49,10 @@ tag:where_cheap_then_guarded	0	3334	0
 tag:where_cheap_then_guarded_plain	0	3334	0
 tag:where_then_guarded	2	5001	5001
 tag:where_then_guarded_plain	0	6668	0
+tag:where_then_guarded_other	2	13337	10002
+tag:where_then_guarded_other_plain	0	16672	0
+tag:where_column_between	0	11669	0
+tag:where_column_between_plain	0	11669	0
 tag:where_or	2	10002	10002
 tag:prewhere_two_atoms	2	10002	10002
 tag:prewhere_two_atoms_plain	0	13337	0

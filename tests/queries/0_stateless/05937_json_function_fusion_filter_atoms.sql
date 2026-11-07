@@ -8,9 +8,9 @@ SET use_query_condition_cache = 0, max_threads = 1, enable_multiple_prewhere_rea
 
 DROP TABLE IF EXISTS json_atoms;
 DROP TABLE IF EXISTS json_atoms_memory;
-CREATE TABLE json_atoms (id UInt32, raw String, other String) ENGINE = MergeTree ORDER BY id;
-INSERT INTO json_atoms SELECT number, concat('{"event": "', ['email.failed', 'store.redis_warm', 'other'][number % 3 + 1], '", "level": "', ['warn', 'info'][number % 2 + 1], '", "message": {"reason": "r', toString(number % 10), '", "operationId": "op', toString(number), '"}, "n": ', toString(number), '}'), concat('{"env": "', ['production', 'staging'][number % 2 + 1], '"}') FROM numbers(10000);
-INSERT INTO json_atoms VALUES (10000, 'not json', '{}'), (10001, '{"event": "email.failed"}', '{"env": "production"}');
+CREATE TABLE json_atoms (id UInt32, raw String, other String, even UInt8) ENGINE = MergeTree ORDER BY id;
+INSERT INTO json_atoms SELECT number, concat('{"event": "', ['email.failed', 'store.redis_warm', 'other'][number % 3 + 1], '", "level": "', ['warn', 'info'][number % 2 + 1], '", "message": {"reason": "r', toString(number % 10), '", "operationId": "op', toString(number), '"}, "n": ', toString(number), '}'), concat('{"env": "', ['production', 'staging'][number % 2 + 1], '"}') , number % 2 = 0 FROM numbers(10000);
+INSERT INTO json_atoms VALUES (10000, 'not json', '{}', 1), (10001, '{"event": "email.failed"}', '{"env": "production"}', 0);
 CREATE TABLE json_atoms_memory ENGINE = Memory AS SELECT * FROM json_atoms;
 
 -- A Filter step (the conditions are kept out of PREWHERE).
@@ -46,6 +46,13 @@ SELECT /* tag:where_cheap_then_guarded_plain */ count() FROM json_atoms_memory W
 -- A guarded atom behind a plain one joins its run: the guarded call becomes an element of the fused group.
 SELECT /* tag:where_then_guarded */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0);
 SELECT /* tag:where_then_guarded_plain */ count() FROM json_atoms_memory WHERE id % 2 = 0 AND JSONExtractString(raw, 'event') = 'email.failed' AND if(raw LIKE '%warn%', JSONExtractString(raw, 'level') = 'warn', 0) SETTINGS fuse_json_functions = 0;
+-- A guard on another document behind a plain atom: the guard is evaluated on the rows the atom passes, as a filter of its own would.
+SELECT /* tag:where_then_guarded_other */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'event') = 'email.failed' AND if(JSONHas(other, 'env'), JSONExtractString(raw, 'level') = 'warn', 0);
+SELECT /* tag:where_then_guarded_other_plain */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'event') = 'email.failed' AND if(JSONHas(other, 'env'), JSONExtractString(raw, 'level') = 'warn', 0) SETTINGS fuse_json_functions = 0;
+
+-- A column between two atoms on one document ends the run: the second atom is not evaluated before the column.
+SELECT /* tag:where_column_between */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'event') = 'email.failed' AND even AND JSONExtractString(raw, 'level') = 'warn';
+SELECT /* tag:where_column_between_plain */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'event') = 'email.failed' AND even AND JSONExtractString(raw, 'level') = 'warn' SETTINGS fuse_json_functions = 0;
 
 -- An OR of predicates on one extracted value next to an atom on the same document.
 SELECT /* tag:where_or */ count() FROM json_atoms_memory WHERE JSONExtractString(raw, 'level') = 'warn' AND (JSONExtractString(raw, 'event') LIKE 'email%' OR JSONExtractString(raw, 'event') LIKE 'store%');
